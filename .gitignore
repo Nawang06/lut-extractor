@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+dist/
+build/
+*.spec
+*_frames/
+*.cube
+*_params.json
+*_graded.jpg
+*_comparison.jpg
+*.MP4
+*.mp4
+*.mov
+*.mkv
+*.JPG
+*.jpg
+*.png
