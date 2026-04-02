@@ -584,44 +584,94 @@ def extract_frames(video_path, num_frames):
 # SECTION 7: Tab 1 — Extract from Media
 # ═══════════════════════════════════════════════════════════════════
 
+THUMB_W, THUMB_H = 120, 80  # Thumbnail size for frame preview
+
+
 class ExtractTab(ttk.Frame):
     def __init__(self, parent, app):
         super().__init__(parent)
         self.app = app
+        self.file_path = None
         self.frames_dir = None
+        self.is_video = False
+        self.video_total_frames = 0
+        self.selected_frames = []  # list of (frame_index, bgr_array)
+        self._thumb_photos = []  # keep references to prevent GC
+        self._scrub_photo = None
         self._build()
 
     def _build(self):
-        # Step 1: Select file
-        s1 = ttk.LabelFrame(self, text="  Step 1: Select Video or Image  ", padding=10)
-        s1.pack(fill="x", padx=10, pady=(10, 5))
+        # Step 1: Select file + frame selection
+        s1 = ttk.LabelFrame(self, text="  Step 1: Select Video or Image & Pick Frames  ", padding=10)
+        s1.pack(fill="both", expand=True, padx=10, pady=(10, 5))
+
+        # Top row: file selection
         row = ttk.Frame(s1)
         row.pack(fill="x")
         ttk.Button(row, text="Select File", command=self._select_file).pack(side="left")
         self.lbl_file = ttk.Label(row, text="No file selected")
         self.lbl_file.pack(side="left", padx=10)
-        self.lbl_frames = ttk.Label(s1, text="")
-        self.lbl_frames.pack(anchor="w", pady=(5, 0))
+
+        # Auto-extract button + manual add
+        row_mode = ttk.Frame(s1)
+        row_mode.pack(fill="x", pady=(8, 0))
+        self.btn_auto = ttk.Button(row_mode, text="Auto-Extract 5 Frames", command=self._auto_extract, state="disabled")
+        self.btn_auto.pack(side="left", padx=(0, 8))
+        self.btn_add_current = ttk.Button(row_mode, text="Add Current Frame", command=self._add_current_frame, state="disabled")
+        self.btn_add_current.pack(side="left", padx=(0, 8))
+        self.btn_clear = ttk.Button(row_mode, text="Clear All", command=self._clear_frames, state="disabled")
+        self.btn_clear.pack(side="left")
+        self.lbl_count = ttk.Label(row_mode, text="", foreground="gray")
+        self.lbl_count.pack(side="right")
+
+        # Video scrubber: preview + slider (only for videos)
+        self.scrub_frame = ttk.Frame(s1)
+        # Not packed yet — shown only when a video is loaded
+
+        self.scrub_canvas = tk.Canvas(self.scrub_frame, width=240, height=160, bg="#1a1a1a",
+                                       highlightthickness=1, highlightbackground="#444")
+        self.scrub_canvas.pack(side="left", padx=(0, 10))
+        self.scrub_canvas.create_text(120, 80, text="Scrub to preview", fill="#666", font=("Helvetica", 10))
+
+        scrub_right = ttk.Frame(self.scrub_frame)
+        scrub_right.pack(side="left", fill="x", expand=True)
+        ttk.Label(scrub_right, text="Drag to scrub through video:").pack(anchor="w")
+        self.scrub_slider = ttk.Scale(scrub_right, from_=0, to=100, orient="horizontal",
+                                       command=self._on_scrub)
+        self.scrub_slider.pack(fill="x", pady=(5, 3))
+        self.lbl_timecode = ttk.Label(scrub_right, text="00:00 / 00:00", foreground="gray")
+        self.lbl_timecode.pack(anchor="w")
+        ttk.Label(scrub_right, text="Scrub to a frame you like, then click 'Add Current Frame'",
+                  foreground="gray", wraplength=400).pack(anchor="w", pady=(5, 0))
+
+        # Selected frames thumbnail strip
+        self.thumb_label = ttk.Label(s1, text="Selected frames (click X to remove):", foreground="#333")
+        # Not packed yet — shown after first frame added
+
+        self.thumb_strip = ttk.Frame(s1)
+        # Not packed yet
 
         # Step 2: Gemini
-        s2 = ttk.LabelFrame(self, text="  Step 2: Analyze with Gemini (free)  ", padding=10)
+        s2 = ttk.LabelFrame(self, text="  Step 2: Upload frames to Gemini & paste response  ", padding=10)
         s2.pack(fill="x", padx=10, pady=5)
-        ttk.Label(s2, text="1. Upload frames to gemini.google.com  2. Paste prompt  3. Copy response", wraplength=700).pack(anchor="w")
         row2 = ttk.Frame(s2)
-        row2.pack(fill="x", pady=(5, 0))
+        row2.pack(fill="x")
+        self.btn_folder = ttk.Button(row2, text="Open Frames Folder", command=self._open_folder, state="disabled")
+        self.btn_folder.pack(side="left", padx=(0, 5))
         self.btn_gemini = ttk.Button(row2, text="Open Gemini", command=self._open_gemini, state="disabled")
         self.btn_gemini.pack(side="left", padx=(0, 5))
         self.btn_copy = ttk.Button(row2, text="Copy Prompt", command=self._copy_prompt, state="disabled")
-        self.btn_copy.pack(side="left", padx=(0, 5))
-        self.btn_folder = ttk.Button(row2, text="Open Frames Folder", command=self._open_folder, state="disabled")
-        self.btn_folder.pack(side="left")
+        self.btn_copy.pack(side="left")
 
-        # Step 3: Paste response
-        s3 = ttk.LabelFrame(self, text="  Step 3: Paste Response & Generate  ", padding=10)
-        s3.pack(fill="both", expand=True, padx=10, pady=(5, 10))
-        self.txt = scrolledtext.ScrolledText(s3, height=6, font=("Consolas", 9), wrap="word")
-        self.txt.pack(fill="both", expand=True, pady=(0, 5))
+        # Step 3: Response + Generate
+        s3 = ttk.Frame(self)
+        s3.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Label(s3, text="Paste Gemini's JSON response:").pack(anchor="w")
+        self.txt = scrolledtext.ScrolledText(s3, height=4, font=("Consolas", 9), wrap="word")
+        self.txt.pack(fill="x", pady=(3, 5))
         ttk.Button(s3, text="Generate LUT", command=self._generate).pack(anchor="w")
+
+    # ── File selection ──
 
     def _select_file(self):
         path = filedialog.askopenfilename(filetypes=[
@@ -632,31 +682,182 @@ class ExtractTab(ttk.Frame):
             return
         self.file_path = Path(path)
         self.lbl_file.config(text=self.file_path.name)
-        self.lbl_frames.config(text="Extracting frames...")
-        threading.Thread(target=self._extract, daemon=True).start()
+        self._clear_frames()
 
-    def _extract(self):
-        vp = self.file_path
-        self.frames_dir = vp.parent / f"{vp.stem}_frames"
-        self.frames_dir.mkdir(exist_ok=True)
         image_exts = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
-        if vp.suffix.lower() in image_exts:
-            import shutil
-            shutil.copy2(str(vp), str(self.frames_dir / f"frame_1{vp.suffix}"))
-            count = 1
+        if self.file_path.suffix.lower() in image_exts:
+            self.is_video = False
+            self.scrub_frame.pack_forget()
+            img = cv2.imread(str(self.file_path))
+            if img is not None:
+                h, w = img.shape[:2]
+                if w > 1280:
+                    scale = 1280 / w
+                    img = cv2.resize(img, (1280, int(h * scale)))
+                self._add_frame(0, img)
+                self._save_frames_to_disk()
+            self.btn_auto.config(state="disabled")
+            self.btn_add_current.config(state="disabled")
         else:
-            frames = extract_frames(vp, NUM_FRAMES)
-            count = 0
-            for i, f in enumerate(frames):
-                cv2.imwrite(str(self.frames_dir / f"frame_{i+1}.jpg"), f, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                count += 1
-        self.after(0, lambda: self._extract_done(count))
+            self.is_video = True
+            cap = cv2.VideoCapture(str(self.file_path))
+            self.video_total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            self.video_fps = cap.get(cv2.CAP_PROP_FPS) or 30
+            cap.release()
+            self.scrub_slider.config(from_=0, to=max(1, self.video_total_frames - 1))
+            self.scrub_slider.set(self.video_total_frames // 2)
+            duration = self.video_total_frames / self.video_fps
+            self.lbl_timecode.config(text=f"00:00 / {int(duration//60):02d}:{int(duration%60):02d}")
+            self.scrub_frame.pack(fill="x", pady=(8, 0), before=self.thumb_label if self.thumb_label.winfo_manager() else None)
+            self.btn_auto.config(state="normal")
+            self.btn_add_current.config(state="normal")
+            self._on_scrub(self.video_total_frames // 2)
 
-    def _extract_done(self, count):
-        self.lbl_frames.config(text=f"{count} frames saved to {self.frames_dir.name}/")
-        self.btn_gemini.config(state="normal")
-        self.btn_copy.config(state="normal")
-        self.btn_folder.config(state="normal")
+    # ── Video scrubber ──
+
+    def _on_scrub(self, val):
+        if not self.is_video or not self.file_path:
+            return
+        frame_idx = int(float(val))
+        secs = frame_idx / self.video_fps
+        duration = self.video_total_frames / self.video_fps
+        self.lbl_timecode.config(text=f"{int(secs//60):02d}:{int(secs%60):02d} / {int(duration//60):02d}:{int(duration%60):02d}")
+        threading.Thread(target=self._load_scrub_frame, args=(frame_idx,), daemon=True).start()
+
+    def _load_scrub_frame(self, frame_idx):
+        cap = cv2.VideoCapture(str(self.file_path))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ret, frame = cap.read()
+        cap.release()
+        if not ret:
+            return
+        h, w = frame.shape[:2]
+        scale = min(240 / w, 160 / h)
+        thumb = cv2.resize(frame, (int(w * scale), int(h * scale)))
+        rgb = cv2.cvtColor(thumb, cv2.COLOR_BGR2RGB)
+        self._current_scrub_bgr = frame  # store full frame for "Add"
+        self._current_scrub_idx = frame_idx
+        pil = Image.fromarray(rgb)
+        self.after(0, lambda p=pil: self._update_scrub_preview(p))
+
+    def _update_scrub_preview(self, pil_img):
+        self._scrub_photo = ImageTk.PhotoImage(pil_img)
+        self.scrub_canvas.delete("all")
+        self.scrub_canvas.create_image(120, 80, image=self._scrub_photo)
+
+    # ── Frame management ──
+
+    def _auto_extract(self):
+        if not self.is_video:
+            return
+        self._clear_frames()
+        self.lbl_count.config(text="Extracting...")
+        threading.Thread(target=self._do_auto_extract, daemon=True).start()
+
+    def _do_auto_extract(self):
+        frames = extract_frames(self.file_path, NUM_FRAMES)
+        total = self.video_total_frames
+        indices = np.linspace(total * 0.1, total * 0.9, NUM_FRAMES, dtype=int)
+        for i, (idx, frame) in enumerate(zip(indices, frames)):
+            self.after(0, lambda ii=int(idx), ff=frame: self._add_frame(ii, ff))
+        self.after(50 * len(frames), self._save_frames_to_disk)
+
+    def _add_current_frame(self):
+        if hasattr(self, '_current_scrub_bgr') and self._current_scrub_bgr is not None:
+            frame = self._current_scrub_bgr
+            h, w = frame.shape[:2]
+            if w > 1280:
+                scale = 1280 / w
+                frame = cv2.resize(frame, (1280, int(h * scale)))
+            self._add_frame(self._current_scrub_idx, frame)
+            self._save_frames_to_disk()
+
+    def _add_frame(self, frame_idx, bgr):
+        self.selected_frames.append((frame_idx, bgr))
+        self._refresh_thumbnails()
+
+    def _remove_frame(self, index):
+        if 0 <= index < len(self.selected_frames):
+            self.selected_frames.pop(index)
+            self._refresh_thumbnails()
+            self._save_frames_to_disk()
+
+    def _clear_frames(self):
+        self.selected_frames = []
+        self._thumb_photos = []
+        self._refresh_thumbnails()
+        self.btn_folder.config(state="disabled")
+        self.btn_gemini.config(state="disabled")
+        self.btn_copy.config(state="disabled")
+        self.lbl_count.config(text="")
+        self.btn_clear.config(state="disabled")
+
+    def _refresh_thumbnails(self):
+        for w in self.thumb_strip.winfo_children():
+            w.destroy()
+        self._thumb_photos = []
+
+        count = len(self.selected_frames)
+        self.lbl_count.config(text=f"{count} frame{'s' if count != 1 else ''} selected")
+
+        if count > 0:
+            self.thumb_label.pack(fill="x", pady=(8, 2))
+            self.thumb_strip.pack(fill="x", pady=(0, 5))
+            self.btn_clear.config(state="normal")
+        else:
+            self.thumb_label.pack_forget()
+            self.thumb_strip.pack_forget()
+            self.btn_clear.config(state="disabled")
+
+        for i, (idx, bgr) in enumerate(self.selected_frames):
+            card = ttk.Frame(self.thumb_strip)
+            card.pack(side="left", padx=3)
+
+            # Thumbnail
+            h, w = bgr.shape[:2]
+            scale = min(THUMB_W / w, THUMB_H / h)
+            small = cv2.resize(bgr, (int(w * scale), int(h * scale)))
+            rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+            pil = Image.fromarray(rgb)
+            photo = ImageTk.PhotoImage(pil)
+            self._thumb_photos.append(photo)
+
+            canvas = tk.Canvas(card, width=THUMB_W, height=THUMB_H, bg="#222", highlightthickness=1, highlightbackground="#555")
+            canvas.pack()
+            canvas.create_image(THUMB_W // 2, THUMB_H // 2, image=photo)
+
+            # Timecode label
+            if self.is_video and self.video_fps > 0:
+                secs = idx / self.video_fps
+                tc = f"{int(secs//60):02d}:{int(secs%60):02d}"
+            else:
+                tc = "Image"
+            lbl_row = ttk.Frame(card)
+            lbl_row.pack(fill="x")
+            ttk.Label(lbl_row, text=tc, font=("Helvetica", 8), foreground="gray").pack(side="left")
+            # Remove button
+            btn_x = tk.Button(lbl_row, text="X", font=("Helvetica", 7, "bold"), fg="red",
+                              relief="flat", cursor="hand2", padx=2, pady=0,
+                              command=lambda ii=i: self._remove_frame(ii))
+            btn_x.pack(side="right")
+
+    def _save_frames_to_disk(self):
+        if not self.file_path:
+            return
+        self.frames_dir = self.file_path.parent / f"{self.file_path.stem}_frames"
+        self.frames_dir.mkdir(exist_ok=True)
+        # Clear old frames
+        for f in self.frames_dir.glob("frame_*.jpg"):
+            f.unlink()
+        for i, (idx, bgr) in enumerate(self.selected_frames):
+            cv2.imwrite(str(self.frames_dir / f"frame_{i+1}.jpg"), bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        # Enable Gemini buttons
+        if len(self.selected_frames) > 0:
+            self.btn_folder.config(state="normal")
+            self.btn_gemini.config(state="normal")
+            self.btn_copy.config(state="normal")
+
+    # ── Gemini ──
 
     def _open_gemini(self):
         import webbrowser
