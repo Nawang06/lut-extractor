@@ -30,7 +30,7 @@ APP_TITLE = "LUT Extractor Pro"
 APP_VERSION = "2.0"
 WINDOW_SIZE = "1100x800"
 MIN_SIZE = (950, 700)
-PREVIEW_W, PREVIEW_H = 280, 200
+PREVIEW_W, PREVIEW_H = 200, 130
 LUT_SIZE = 33
 NUM_FRAMES = 5
 DEBOUNCE_MS = 80
@@ -878,8 +878,14 @@ class ExtractTab(ttk.Frame):
         try:
             params = parse_gemini_response(text)
             self.app.set_params(params, f"Extracted: {params['grade_name']}")
+            self.app.bottom.lbl_status.config(
+                text=f"LUT ready: {params['grade_name']}", foreground="#228B22")
         except (json.JSONDecodeError, ValueError) as e:
-            messagebox.showerror("Parse Error", str(e))
+            self.app.bottom.lbl_status.config(
+                text=f"Error: {str(e)[:60]}", foreground="red")
+            messagebox.showerror("Parse Error",
+                f"{str(e)}\n\nMake sure you copied the COMPLETE JSON response "
+                f"from Gemini, including the opening {{ and closing }} braces.")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1151,44 +1157,44 @@ class BottomPanel(ttk.Frame):
         self._build()
 
     def _build(self):
-        # Preview canvases
-        preview_frame = ttk.LabelFrame(self, text="  Preview  ", padding=5)
-        preview_frame.pack(fill="x", padx=10, pady=(5, 3))
+        # Single row: BEFORE canvas | AFTER canvas | controls column
+        row = ttk.Frame(self)
+        row.pack(fill="x", padx=10, pady=3)
 
-        canvas_frame = ttk.Frame(preview_frame)
-        canvas_frame.pack()
-
-        ttk.Label(canvas_frame, text="BEFORE", font=("Helvetica", 9, "bold")).grid(row=0, column=0)
-        ttk.Label(canvas_frame, text="AFTER", font=("Helvetica", 9, "bold")).grid(row=0, column=2)
-
-        self.canvas_before = tk.Canvas(canvas_frame, width=PREVIEW_W, height=PREVIEW_H,
+        # Before
+        before_col = ttk.Frame(row)
+        before_col.pack(side="left", padx=(0, 3))
+        ttk.Label(before_col, text="BEFORE", font=("Helvetica", 8, "bold")).pack()
+        self.canvas_before = tk.Canvas(before_col, width=PREVIEW_W, height=PREVIEW_H,
                                         bg="#1a1a1a", highlightthickness=1, highlightbackground="#444")
-        self.canvas_before.grid(row=1, column=0, padx=(0, 3))
+        self.canvas_before.pack()
 
-        ttk.Separator(canvas_frame, orient="vertical").grid(row=1, column=1, sticky="ns", padx=3)
-
-        self.canvas_after = tk.Canvas(canvas_frame, width=PREVIEW_W, height=PREVIEW_H,
+        # After
+        after_col = ttk.Frame(row)
+        after_col.pack(side="left", padx=(3, 10))
+        ttk.Label(after_col, text="AFTER", font=("Helvetica", 8, "bold")).pack()
+        self.canvas_after = tk.Canvas(after_col, width=PREVIEW_W, height=PREVIEW_H,
                                        bg="#1a1a1a", highlightthickness=1, highlightbackground="#444")
-        self.canvas_after.grid(row=1, column=2, padx=(3, 0))
+        self.canvas_after.pack()
 
-        # Controls row
-        ctrl = ttk.Frame(self)
-        ctrl.pack(fill="x", padx=10, pady=(3, 5))
+        # Controls column (right of canvases)
+        ctrl = ttk.Frame(row)
+        ctrl.pack(side="left", fill="y", padx=5)
 
-        ttk.Label(ctrl, text="Intensity:").pack(side="left", padx=(0, 5))
+        ttk.Button(ctrl, text="Load Image", command=self._load_image).pack(fill="x", pady=(0, 5))
+        ttk.Button(ctrl, text="Export .cube", command=self._export).pack(fill="x", pady=(0, 8))
+
+        ttk.Label(ctrl, text="Intensity:").pack(anchor="w")
         self.intensity_var = tk.DoubleVar(value=100.0)
         self.intensity_slider = ttk.Scale(ctrl, from_=0, to=100, orient="horizontal",
-                                           variable=self.intensity_var, length=150,
+                                           variable=self.intensity_var, length=120,
                                            command=self._on_intensity)
-        self.intensity_slider.pack(side="left", padx=(0, 3))
-        self.lbl_intensity = ttk.Label(ctrl, text="100%", width=5)
-        self.lbl_intensity.pack(side="left", padx=(0, 15))
+        self.intensity_slider.pack(fill="x")
+        self.lbl_intensity = ttk.Label(ctrl, text="100%")
+        self.lbl_intensity.pack(anchor="w")
 
-        ttk.Button(ctrl, text="Load Image", command=self._load_image).pack(side="left", padx=(0, 8))
-        ttk.Button(ctrl, text="Export .cube", command=self._export).pack(side="left", padx=(0, 8))
-
-        self.lbl_status = ttk.Label(ctrl, text="Ready", foreground="gray")
-        self.lbl_status.pack(side="right")
+        self.lbl_status = ttk.Label(ctrl, text="Ready", foreground="gray", wraplength=150)
+        self.lbl_status.pack(anchor="w", pady=(5, 0))
 
     def update_preview(self, lut_3d):
         engine = self.app.engine
