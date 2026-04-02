@@ -461,27 +461,13 @@ class LUTEngine:
 
 class PreviewEngine:
     def __init__(self):
+        self.has_image = False
         self.original_bgr = self._generate_default_image()
         self.preview_bgr = self._downscale(self.original_bgr)
 
     def _generate_default_image(self):
-        img = np.zeros((240, 320, 3), dtype=np.uint8)
-        for x in range(320):
-            v = int(x / 319 * 255)
-            img[0:40, x] = [v, v, v]
-        colors = [
-            (100, 140, 200), (200, 140, 80), (60, 130, 60), (60, 60, 200),
-            (60, 180, 200), (160, 60, 120), (40, 40, 40), (220, 220, 220),
-        ]
-        pw = 320 // len(colors)
-        for i, c in enumerate(colors):
-            img[40:100, i * pw:(i + 1) * pw] = c
-        for y in range(100, 240):
-            for x in range(320):
-                r = int(160 + 80 * np.sin(x / 320 * np.pi + y / 240 * 0.5))
-                g = int(120 + 100 * np.sin(x / 320 * np.pi + 1.2 + y / 240 * 0.3))
-                b = int(100 + 120 * np.sin(x / 320 * np.pi + 2.8 + y / 240 * 0.7))
-                img[y, x] = [max(0, min(255, b)), max(0, min(255, g)), max(0, min(255, r))]
+        """Simple gray placeholder prompting user to load their own image."""
+        img = np.full((PREVIEW_H, PREVIEW_W, 3), 60, dtype=np.uint8)
         return img
 
     def _downscale(self, img):
@@ -496,6 +482,7 @@ class PreviewEngine:
         if img is not None:
             self.original_bgr = img
             self.preview_bgr = self._downscale(img)
+            self.has_image = True
             return True
         return False
 
@@ -1020,6 +1007,9 @@ class BottomPanel(ttk.Frame):
         self.canvas_after.delete("all")
         self.canvas_before.create_image(PREVIEW_W // 2, PREVIEW_H // 2, image=self._before_photo)
         self.canvas_after.create_image(PREVIEW_W // 2, PREVIEW_H // 2, image=self._after_photo)
+        if not self.app.preview_engine.has_image:
+            self.canvas_before.create_text(PREVIEW_W // 2, PREVIEW_H // 2, text="Load an image\nto preview", fill="#888", font=("Helvetica", 11), justify="center")
+            self.canvas_after.create_text(PREVIEW_W // 2, PREVIEW_H // 2, text="Load an image\nto preview", fill="#888", font=("Helvetica", 11), justify="center")
 
     def _on_intensity(self, val):
         self.lbl_intensity.config(text=f"{int(float(val))}%")
