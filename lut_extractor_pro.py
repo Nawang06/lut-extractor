@@ -503,28 +503,157 @@ class PreviewEngine:
 # SECTION 5: Prompt Generator
 # ═══════════════════════════════════════════════════════════════════
 
-EXTRACT_PROMPT = """You are a professional film colorist analyzing cinematic frames.
+EXTRACT_PROMPT = """You are an elite Hollywood DIT (Digital Imaging Technician) and colorist with 20 years of experience grading feature films. You are analyzing frames from a video to reverse-engineer the exact color grade applied.
 
-Examine these frames and determine the EXACT color grading parameters that would recreate this look when applied to neutral/flat Rec.709 footage.
+Your task: determine the PRECISE numeric color grading parameters that would recreate this look when applied to neutral/flat Rec.709 footage. These numbers will directly generate a 3D LUT (.cube file) used in DaVinci Resolve and Adobe Premiere Pro.
 
-Return ONLY a JSON object (no markdown, no explanation) with these keys:
+ANALYZE THE FRAMES CAREFULLY. Look at:
+1. SHADOWS: What color cast is in the dark areas? Teal? Blue? Warm? Neutral?
+2. MIDTONES: What's the overall color bias? Warm skin tones? Cool steel? Green tint?
+3. HIGHLIGHTS: Are the bright areas warm (golden)? Cool (blue-white)? Clipped or rolled off?
+4. CONTRAST: Is it flat/low-contrast (lifted blacks, compressed highlights) or punchy/high-contrast?
+5. SATURATION: Are colors vivid/saturated or muted/desaturated?
+6. TONE CURVE: Are blacks crushed (true black) or lifted (milky/faded)? Are whites clipped or rolled off?
+7. OVERALL MOOD: What emotion does this grade convey?
 
-{"shadows_r": 0.0, "shadows_g": 0.0, "shadows_b": 0.0, "midtones_r": 1.0, "midtones_g": 1.0, "midtones_b": 1.0, "highlights_r": 0.0, "highlights_g": 0.0, "highlights_b": 0.0, "contrast": 1.0, "saturation": 1.0, "temperature": 0.0, "tint": 0.0, "curve_blacks": 0.0, "curve_shadows": 0.25, "curve_midpoint": 0.5, "curve_highlights": 0.75, "curve_whites": 1.0, "grade_name": "Name"}
+Return ONLY a JSON object with these 18 parameters:
 
-Ranges: shadows/highlights_r/g/b: -0.20 to 0.20 | midtones_r/g/b: 0.5 to 1.5 | contrast: 0.5 to 2.0 | saturation: 0.0 to 2.0 | temperature/tint: -0.30 to 0.30 | curve points: 0.0 to 1.0
+{
+  "shadows_r": <float>,    "shadows_g": <float>,    "shadows_b": <float>,
+  "midtones_r": <float>,   "midtones_g": <float>,   "midtones_b": <float>,
+  "highlights_r": <float>, "highlights_g": <float>, "highlights_b": <float>,
+  "contrast": <float>,
+  "saturation": <float>,
+  "temperature": <float>,
+  "tint": <float>,
+  "curve_blacks": <float>,
+  "curve_shadows": <float>,
+  "curve_midpoint": <float>,
+  "curve_highlights": <float>,
+  "curve_whites": <float>,
+  "grade_name": "<short descriptive name>"
+}
 
-Be precise. These numbers directly generate a LUT file."""
+PARAMETER GUIDE (with visual meaning):
 
-TEXT_CREATE_PROMPT = """You are a professional colorist. Based on the description below, generate color grading parameters as a JSON object.
+SHADOWS (color offset in dark areas, -0.20 to 0.20, 0 = neutral):
+  - Teal/cyan shadows: shadows_r: -0.06, shadows_g: 0.02, shadows_b: 0.08
+  - Warm/amber shadows: shadows_r: 0.06, shadows_g: 0.02, shadows_b: -0.04
+  - Green shadows: shadows_r: -0.04, shadows_g: 0.06, shadows_b: -0.02
+  - Blue shadows: shadows_r: -0.04, shadows_g: -0.02, shadows_b: 0.08
+  - Subtle shift = 0.02-0.04, Strong shift = 0.08-0.15
+
+MIDTONES (gamma/power multiplier, 0.5 to 1.5, 1.0 = no change):
+  - Warm midtones: midtones_r: 1.06, midtones_g: 1.0, midtones_b: 0.92
+  - Cool midtones: midtones_r: 0.92, midtones_g: 0.98, midtones_b: 1.08
+  - Green tint (Matrix): midtones_r: 0.88, midtones_g: 1.12, midtones_b: 0.90
+  - Values below 1.0 reduce that channel, above 1.0 boost it
+
+HIGHLIGHTS (color shift in bright areas, -0.20 to 0.20, 0 = neutral):
+  - Warm golden highlights: highlights_r: 0.08, highlights_g: 0.04, highlights_b: -0.06
+  - Cool blue highlights: highlights_r: -0.04, highlights_g: 0.0, highlights_b: 0.06
+  - Neutral highlights: all near 0.0
+
+CONTRAST (0.5 to 2.0, 1.0 = no change):
+  - Flat/matte look: 0.75-0.90
+  - Normal: 1.0-1.15
+  - Punchy cinematic: 1.20-1.40
+  - Extreme (bleach bypass): 1.45-1.70
+
+SATURATION (0.0 to 2.0, 1.0 = no change):
+  - Nearly monochrome: 0.10-0.20
+  - Desaturated/moody: 0.50-0.70
+  - Slightly muted: 0.80-0.95
+  - Normal: 1.0
+  - Vivid/punchy: 1.15-1.30
+  - Hyper-saturated: 1.40+
+
+TEMPERATURE (-0.30 to 0.30, 0 = neutral):
+  - Cool/blue: -0.05 to -0.15
+  - Neutral: 0.0
+  - Warm/amber: 0.05 to 0.15
+  - Very warm (golden hour): 0.10 to 0.20
+
+TINT (-0.30 to 0.30, 0 = neutral):
+  - Green tint: -0.05 to -0.10
+  - Neutral: 0.0
+  - Magenta tint: 0.03 to 0.08
+
+TONE CURVE (5 control points mapping input brightness to output, 0.0 to 1.0):
+  curve_blacks (0.00-0.15): Black point. 0.0 = true black. Higher = lifted/faded/milky blacks.
+  curve_shadows (0.10-0.40): Quarter-tone response. Lower = darker shadows, higher = lighter.
+  curve_midpoint (0.30-0.70): Overall brightness pivot. 0.5 = neutral.
+  curve_highlights (0.60-0.90): Three-quarter response. Higher = brighter highlights.
+  curve_whites (0.85-1.00): White point. 1.0 = full white. Lower = rolled-off/soft highlights.
+
+  Examples:
+  - Standard S-curve (cinematic): blacks=0.02, shadows=0.20, mid=0.50, highlights=0.80, whites=0.98
+  - Lifted blacks (faded/vintage): blacks=0.06, shadows=0.26, mid=0.50, highlights=0.76, whites=0.94
+  - High contrast (drama): blacks=0.00, shadows=0.15, mid=0.50, highlights=0.85, whites=1.00
+  - Flat/log (washed out): blacks=0.08, shadows=0.30, mid=0.52, highlights=0.72, whites=0.90
+
+KNOWN FILM LOOKS (for reference):
+  - Teal & Orange (Transformers): strong blue shadows + warm orange highlights, boosted saturation
+  - Bleach Bypass (Saving Private Ryan): extreme contrast, very desaturated, no color bias
+  - David Fincher (Se7en, Gone Girl): cool, desaturated, slightly green midtones, crushed blacks
+  - Wes Anderson: pastel, warm, slightly lifted, moderate saturation
+  - Christopher Nolan (Oppenheimer): natural but contrasty, warm highlights, deep blacks
+  - Wong Kar-wai (In the Mood for Love): heavy warm/amber, saturated reds, moody shadows
+
+Return ONLY the JSON object. No markdown code blocks. No explanation text. Just the raw JSON starting with { and ending with }."""
+
+TEXT_CREATE_PROMPT = """You are an elite Hollywood DIT (Digital Imaging Technician) and colorist. Based on the description below, create the exact color grading parameters for a 3D LUT.
 
 DESCRIPTION: {description}
 
-Return ONLY a valid JSON object with these keys and numeric values:
+Think deeply about what makes this look distinctive:
+- What are the shadow tones? (Cool/teal? Warm? Neutral? Green-tinged?)
+- What are the midtones biased toward? (Warm skin? Cool steel? Neutral?)
+- What are the highlight tones? (Golden? Blue-white? Rolled off? Clipped?)
+- Is it high or low contrast?
+- Saturated or desaturated?
+- Lifted blacks (faded/vintage) or crushed blacks (deep/dramatic)?
 
-{{"grade_name": "<descriptive name>", "curve_blacks": <0.00-0.15>, "curve_shadows": <0.10-0.40>, "curve_midpoint": <0.30-0.70>, "curve_highlights": <0.60-0.90>, "curve_whites": <0.85-1.00>, "shadows_r": <-0.20 to 0.20>, "shadows_g": <-0.20 to 0.20>, "shadows_b": <-0.20 to 0.20>, "midtones_r": <0.5-1.5>, "midtones_g": <0.5-1.5>, "midtones_b": <0.5-1.5>, "highlights_r": <-0.20 to 0.20>, "highlights_g": <-0.20 to 0.20>, "highlights_b": <-0.20 to 0.20>, "contrast": <0.5-2.0, 1.0=neutral>, "saturation": <0.0-2.0, 1.0=neutral>, "temperature": <-0.30 to 0.30, negative=cool, positive=warm>, "tint": <-0.30 to 0.30, negative=green, positive=magenta>}}
+For FILM STOCKS, consider their known characteristics:
+- Kodak Portra: low contrast, warm skin tones, muted greens, lifted shadows
+- Fuji Velvia: extreme saturation, deep blacks, vivid greens and blues
+- CineStill 800T: tungsten amber cast, halation glow, lifted blacks
+- Kodachrome: deep reds, cyan highlights, warm midtones, high saturation
 
-Think about what makes this look distinctive. For film stocks, consider spectral response. For movies, consider the actual DI grade. For moods, translate emotion into color science.
-Return ONLY the JSON, no other text."""
+For MOVIE REFERENCES, consider the actual DI grade:
+- Blade Runner 2049: heavy orange/teal split, desaturated midtones, high contrast
+- The Matrix: green tint everywhere, desaturated, high contrast
+- Mad Max Fury Road: extreme teal/orange, crushed blacks, boosted saturation
+- Euphoria: neon magenta/cyan highlights, lifted blacks, high saturation
+- Dune: warm desert amber, desaturated blues, slightly lifted blacks
+
+For MOODS/EMOTIONS:
+- Warm = safety, nostalgia, romance (push temperature positive, amber shadows)
+- Cool = isolation, sadness, clinical (push temperature negative, blue shadows)
+- Desaturated = gritty, serious, documentary (saturation 0.5-0.7)
+- High contrast = dramatic, intense (contrast 1.3+, crush blacks)
+- Faded/lifted = vintage, dreamy, nostalgic (curve_blacks 0.05+)
+
+Return ONLY a JSON object with these 18 parameters:
+
+{{
+  "shadows_r": <-0.20 to 0.20>, "shadows_g": <-0.20 to 0.20>, "shadows_b": <-0.20 to 0.20>,
+  "midtones_r": <0.5-1.5>, "midtones_g": <0.5-1.5>, "midtones_b": <0.5-1.5>,
+  "highlights_r": <-0.20 to 0.20>, "highlights_g": <-0.20 to 0.20>, "highlights_b": <-0.20 to 0.20>,
+  "contrast": <0.5-2.0, 1.0=neutral>,
+  "saturation": <0.0-2.0, 1.0=neutral>,
+  "temperature": <-0.30 to 0.30, negative=cool/blue, positive=warm/amber>,
+  "tint": <-0.30 to 0.30, negative=green, positive=magenta>,
+  "curve_blacks": <0.00-0.15, higher=lifted/faded>,
+  "curve_shadows": <0.10-0.40>,
+  "curve_midpoint": <0.30-0.70, 0.5=neutral>,
+  "curve_highlights": <0.60-0.90>,
+  "curve_whites": <0.85-1.00, lower=rolled-off>,
+  "grade_name": "<short descriptive name for this look>"
+}}
+
+Be bold with the values — subtle shifts (0.01-0.02) are barely visible in a LUT. Use meaningful shifts (0.04-0.10) to create a look that's actually noticeable.
+Return ONLY the JSON, no other text, no markdown formatting."""
 
 REQUIRED_KEYS = [
     "shadows_r", "shadows_g", "shadows_b", "midtones_r", "midtones_g", "midtones_b",
