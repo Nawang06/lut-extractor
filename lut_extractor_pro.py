@@ -2,11 +2,14 @@
 LUT Extractor Pro — Extract, create, and customize cinematic LUTs.
 Single-file GUI app. Package with: pyinstaller --onefile --windowed lut_extractor_pro.py
 
+V5 Engine: per-channel R/G/B tone curves (15) + dual shadow/highlight 3x3 color matrices (18) + saturation (1) = 34 parameters.
+Shadow and highlight matrices are blended by luminance (smoothstep), capturing different color mixing in darks vs brights.
+
 Features:
   Tab 1: Extract from Media — analyze video/image frames via Gemini AI
   Tab 2: Create from Text — describe a look, get a LUT
   Tab 3: Preset Library — 22 built-in cinematic presets (no AI needed)
-  Tab 4: Editor — 17 sliders with real-time before/after preview
+  Tab 4: Editor — 34 sliders with real-time before/after preview
 """
 
 import copy
@@ -27,7 +30,7 @@ from PIL import Image, ImageTk
 # ═══════════════════════════════════════════════════════════════════
 
 APP_TITLE = "LUT Extractor Pro"
-APP_VERSION = "2.0"
+APP_VERSION = "3.0"  # V5 engine
 WINDOW_SIZE = "1100x800"
 MIN_SIZE = (950, 700)
 PREVIEW_W, PREVIEW_H = 200, 130
@@ -37,34 +40,64 @@ DEBOUNCE_MS = 80
 INTENSITY_DEBOUNCE_MS = 30
 
 DEFAULT_PARAMS = {
-    "curve_blacks": 0.00, "curve_shadows": 0.25, "curve_midpoint": 0.50,
-    "curve_highlights": 0.75, "curve_whites": 1.00,
-    "shadows_r": 0.0, "shadows_g": 0.0, "shadows_b": 0.0,
-    "midtones_r": 1.0, "midtones_g": 1.0, "midtones_b": 1.0,
-    "highlights_r": 0.0, "highlights_g": 0.0, "highlights_b": 0.0,
-    "contrast": 1.0, "saturation": 1.0, "temperature": 0.0, "tint": 0.0,
+    # Per-channel tone curves (5 control points each, mapping input → output brightness)
+    "r_blacks": 0.00, "r_shadows": 0.25, "r_mid": 0.50, "r_highlights": 0.75, "r_whites": 1.00,
+    "g_blacks": 0.00, "g_shadows": 0.25, "g_mid": 0.50, "g_highlights": 0.75, "g_whites": 1.00,
+    "b_blacks": 0.00, "b_shadows": 0.25, "b_mid": 0.50, "b_highlights": 0.75, "b_whites": 1.00,
+    # Shadow color matrix (applied to dark pixels, blended by luminance)
+    "smat_rr": 1.0, "smat_rg": 0.0, "smat_rb": 0.0,
+    "smat_gr": 0.0, "smat_gg": 1.0, "smat_gb": 0.0,
+    "smat_br": 0.0, "smat_bg": 0.0, "smat_bb": 1.0,
+    # Highlight color matrix (applied to bright pixels, blended by luminance)
+    "hmat_rr": 1.0, "hmat_rg": 0.0, "hmat_rb": 0.0,
+    "hmat_gr": 0.0, "hmat_gg": 1.0, "hmat_gb": 0.0,
+    "hmat_br": 0.0, "hmat_bg": 0.0, "hmat_bb": 1.0,
+    # Global
+    "saturation": 1.0,
     "grade_name": "Untitled",
 }
 
 SLIDER_CONFIG = {
-    "curve_blacks":     {"from": 0.00, "to": 0.15, "res": 0.005, "section": "Tone Curve"},
-    "curve_shadows":    {"from": 0.10, "to": 0.40, "res": 0.005, "section": "Tone Curve"},
-    "curve_midpoint":   {"from": 0.30, "to": 0.70, "res": 0.005, "section": "Tone Curve"},
-    "curve_highlights": {"from": 0.60, "to": 0.90, "res": 0.005, "section": "Tone Curve"},
-    "curve_whites":     {"from": 0.85, "to": 1.00, "res": 0.005, "section": "Tone Curve"},
-    "shadows_r":    {"from": -0.20, "to": 0.20, "res": 0.005, "section": "Shadows"},
-    "shadows_g":    {"from": -0.20, "to": 0.20, "res": 0.005, "section": "Shadows"},
-    "shadows_b":    {"from": -0.20, "to": 0.20, "res": 0.005, "section": "Shadows"},
-    "midtones_r":   {"from": 0.50, "to": 1.50, "res": 0.01,  "section": "Midtones"},
-    "midtones_g":   {"from": 0.50, "to": 1.50, "res": 0.01,  "section": "Midtones"},
-    "midtones_b":   {"from": 0.50, "to": 1.50, "res": 0.01,  "section": "Midtones"},
-    "highlights_r": {"from": -0.20, "to": 0.20, "res": 0.005, "section": "Highlights"},
-    "highlights_g": {"from": -0.20, "to": 0.20, "res": 0.005, "section": "Highlights"},
-    "highlights_b": {"from": -0.20, "to": 0.20, "res": 0.005, "section": "Highlights"},
-    "contrast":     {"from": 0.50, "to": 2.00, "res": 0.01,  "section": "Global"},
-    "saturation":   {"from": 0.00, "to": 2.00, "res": 0.01,  "section": "Global"},
-    "temperature":  {"from": -0.30, "to": 0.30, "res": 0.01,  "section": "Global"},
-    "tint":         {"from": -0.30, "to": 0.30, "res": 0.01,  "section": "Global"},
+    # Red channel curve
+    "r_blacks":     {"from": 0.00, "to": 0.20, "res": 0.005, "section": "Red Curve"},
+    "r_shadows":    {"from": 0.05, "to": 0.45, "res": 0.005, "section": "Red Curve"},
+    "r_mid":        {"from": 0.20, "to": 0.80, "res": 0.005, "section": "Red Curve"},
+    "r_highlights": {"from": 0.55, "to": 0.95, "res": 0.005, "section": "Red Curve"},
+    "r_whites":     {"from": 0.80, "to": 1.00, "res": 0.005, "section": "Red Curve"},
+    # Green channel curve
+    "g_blacks":     {"from": 0.00, "to": 0.20, "res": 0.005, "section": "Green Curve"},
+    "g_shadows":    {"from": 0.05, "to": 0.45, "res": 0.005, "section": "Green Curve"},
+    "g_mid":        {"from": 0.20, "to": 0.80, "res": 0.005, "section": "Green Curve"},
+    "g_highlights": {"from": 0.55, "to": 0.95, "res": 0.005, "section": "Green Curve"},
+    "g_whites":     {"from": 0.80, "to": 1.00, "res": 0.005, "section": "Green Curve"},
+    # Blue channel curve
+    "b_blacks":     {"from": 0.00, "to": 0.20, "res": 0.005, "section": "Blue Curve"},
+    "b_shadows":    {"from": 0.05, "to": 0.45, "res": 0.005, "section": "Blue Curve"},
+    "b_mid":        {"from": 0.20, "to": 0.80, "res": 0.005, "section": "Blue Curve"},
+    "b_highlights": {"from": 0.55, "to": 0.95, "res": 0.005, "section": "Blue Curve"},
+    "b_whites":     {"from": 0.80, "to": 1.00, "res": 0.005, "section": "Blue Curve"},
+    # Shadow matrix (color mixing in dark areas)
+    "smat_rr": {"from": -0.50, "to": 2.00, "res": 0.01, "section": "Shadow Matrix — Red Out"},
+    "smat_rg": {"from": -1.00, "to": 1.00, "res": 0.01, "section": "Shadow Matrix — Red Out"},
+    "smat_rb": {"from": -1.00, "to": 1.50, "res": 0.01, "section": "Shadow Matrix — Red Out"},
+    "smat_gr": {"from": -1.00, "to": 1.00, "res": 0.01, "section": "Shadow Matrix — Green Out"},
+    "smat_gg": {"from": -0.50, "to": 2.00, "res": 0.01, "section": "Shadow Matrix — Green Out"},
+    "smat_gb": {"from": -1.00, "to": 1.00, "res": 0.01, "section": "Shadow Matrix — Green Out"},
+    "smat_br": {"from": -1.00, "to": 1.50, "res": 0.01, "section": "Shadow Matrix — Blue Out"},
+    "smat_bg": {"from": -1.00, "to": 1.00, "res": 0.01, "section": "Shadow Matrix — Blue Out"},
+    "smat_bb": {"from": -0.50, "to": 2.00, "res": 0.01, "section": "Shadow Matrix — Blue Out"},
+    # Highlight matrix (color mixing in bright areas)
+    "hmat_rr": {"from": -0.50, "to": 2.00, "res": 0.01, "section": "Highlight Matrix — Red Out"},
+    "hmat_rg": {"from": -1.00, "to": 1.00, "res": 0.01, "section": "Highlight Matrix — Red Out"},
+    "hmat_rb": {"from": -1.00, "to": 1.50, "res": 0.01, "section": "Highlight Matrix — Red Out"},
+    "hmat_gr": {"from": -1.00, "to": 1.00, "res": 0.01, "section": "Highlight Matrix — Green Out"},
+    "hmat_gg": {"from": -0.50, "to": 2.00, "res": 0.01, "section": "Highlight Matrix — Green Out"},
+    "hmat_gb": {"from": -1.00, "to": 1.00, "res": 0.01, "section": "Highlight Matrix — Green Out"},
+    "hmat_br": {"from": -1.00, "to": 1.50, "res": 0.01, "section": "Highlight Matrix — Blue Out"},
+    "hmat_bg": {"from": -1.00, "to": 1.00, "res": 0.01, "section": "Highlight Matrix — Blue Out"},
+    "hmat_bb": {"from": -0.50, "to": 2.00, "res": 0.01, "section": "Highlight Matrix — Blue Out"},
+    # Global
+    "saturation": {"from": 0.00, "to": 2.00, "res": 0.01, "section": "Global"},
 }
 
 # ═══════════════════════════════════════════════════════════════════
@@ -76,97 +109,121 @@ PRESETS = {
         "Teal & Orange": {
             "desc": "Blockbuster look with warm highlights and cool teal shadows. Think Transformers, Mad Max.",
             "params": {
-                "curve_blacks": 0.03, "curve_shadows": 0.22, "curve_midpoint": 0.50,
-                "curve_highlights": 0.78, "curve_whites": 0.97,
-                "shadows_r": -0.08, "shadows_g": 0.04, "shadows_b": 0.12,
-                "midtones_r": 1.05, "midtones_g": 0.97, "midtones_b": 0.90,
-                "highlights_r": 0.10, "highlights_g": 0.02, "highlights_b": -0.08,
-                "contrast": 1.15, "saturation": 1.20, "temperature": 0.04, "tint": 0.0,
-                "grade_name": "Teal & Orange",
+                "r_blacks": 0.017, "r_shadows": 0.150, "r_mid": 0.550, "r_highlights": 0.931, "r_whites": 1.000,
+                "g_blacks": 0.037, "g_shadows": 0.207, "g_mid": 0.520, "g_highlights": 0.839, "g_whites": 1.000,
+                "b_blacks": 0.074, "b_shadows": 0.202, "b_mid": 0.451, "b_highlights": 0.720, "b_whites": 0.881,
+                "smat_rr": 1.091, "smat_rg": -0.112, "smat_rb": -0.015,
+                "smat_gr": -0.057, "smat_gg": 1.066, "smat_gb": -0.028,
+                "smat_br": -0.058, "smat_bg": -0.186, "smat_bb": 1.244,
+                "hmat_rr": 1.104, "hmat_rg": -0.101, "hmat_rb": -0.011,
+                "hmat_gr": -0.035, "hmat_gg": 1.059, "hmat_gb": -0.011,
+                "hmat_br": -0.040, "hmat_bg": -0.150, "hmat_bb": 1.235,
+                "saturation": 1.20, "grade_name": "Teal & Orange",
             },
         },
         "Bleach Bypass": {
             "desc": "High contrast, desaturated. Saving Private Ryan, Se7en look.",
             "params": {
-                "curve_blacks": 0.02, "curve_shadows": 0.20, "curve_midpoint": 0.48,
-                "curve_highlights": 0.80, "curve_whites": 0.98,
-                "shadows_r": 0.0, "shadows_g": 0.0, "shadows_b": 0.0,
-                "midtones_r": 1.0, "midtones_g": 1.0, "midtones_b": 1.0,
-                "highlights_r": 0.02, "highlights_g": 0.02, "highlights_b": 0.02,
-                "contrast": 1.50, "saturation": 0.45, "temperature": 0.0, "tint": 0.0,
-                "grade_name": "Bleach Bypass",
+                "r_blacks": 0.000, "r_shadows": 0.051, "r_mid": 0.479, "r_highlights": 0.969, "r_whites": 1.000,
+                "g_blacks": 0.000, "g_shadows": 0.051, "g_mid": 0.479, "g_highlights": 0.969, "g_whites": 1.000,
+                "b_blacks": 0.000, "b_shadows": 0.051, "b_mid": 0.479, "b_highlights": 0.969, "b_whites": 1.000,
+                "smat_rr": 0.570, "smat_rg": 0.381, "smat_rb": 0.031,
+                "smat_gr": 0.108, "smat_gg": 0.849, "smat_gb": 0.031,
+                "smat_br": 0.109, "smat_bg": 0.381, "smat_bb": 0.493,
+                "hmat_rr": 0.580, "hmat_rg": 0.389, "hmat_rb": 0.041,
+                "hmat_gr": 0.120, "hmat_gg": 0.849, "hmat_gb": 0.041,
+                "hmat_br": 0.119, "hmat_bg": 0.389, "hmat_bb": 0.503,
+                "saturation": 0.45, "grade_name": "Bleach Bypass",
             },
         },
         "Vintage Film": {
             "desc": "Warm, faded look with lifted blacks and muted colors. Indie film feel.",
             "params": {
-                "curve_blacks": 0.06, "curve_shadows": 0.24, "curve_midpoint": 0.50,
-                "curve_highlights": 0.76, "curve_whites": 0.94,
-                "shadows_r": 0.04, "shadows_g": 0.02, "shadows_b": -0.02,
-                "midtones_r": 1.03, "midtones_g": 1.01, "midtones_b": 0.95,
-                "highlights_r": 0.05, "highlights_g": 0.03, "highlights_b": -0.03,
-                "contrast": 0.90, "saturation": 0.80, "temperature": 0.06, "tint": 0.01,
-                "grade_name": "Vintage Film",
+                "r_blacks": 0.177, "r_shadows": 0.342, "r_mid": 0.578, "r_highlights": 0.810, "r_whites": 0.970,
+                "g_blacks": 0.132, "g_shadows": 0.297, "g_mid": 0.533, "g_highlights": 0.768, "g_whites": 0.930,
+                "b_blacks": 0.063, "b_shadows": 0.219, "b_mid": 0.451, "b_highlights": 0.687, "b_whites": 0.853,
+                "smat_rr": 0.848, "smat_rg": 0.160, "smat_rb": 0.018,
+                "smat_gr": 0.042, "smat_gg": 0.941, "smat_gb": 0.014,
+                "smat_br": 0.030, "smat_bg": 0.110, "smat_bb": 0.807,
+                "hmat_rr": 0.843, "hmat_rg": 0.152, "hmat_rb": 0.014,
+                "hmat_gr": 0.042, "hmat_gg": 0.942, "hmat_gb": 0.014,
+                "hmat_br": 0.040, "hmat_bg": 0.126, "hmat_bb": 0.815,
+                "saturation": 0.80, "grade_name": "Vintage Film",
             },
         },
         "Moody Desaturated": {
             "desc": "Dark, muted look with cool undertones. David Fincher style.",
             "params": {
-                "curve_blacks": 0.04, "curve_shadows": 0.22, "curve_midpoint": 0.46,
-                "curve_highlights": 0.74, "curve_whites": 0.96,
-                "shadows_r": 0.02, "shadows_g": 0.02, "shadows_b": 0.04,
-                "midtones_r": 0.98, "midtones_g": 0.98, "midtones_b": 1.02,
-                "highlights_r": -0.02, "highlights_g": -0.01, "highlights_b": 0.01,
-                "contrast": 1.05, "saturation": 0.55, "temperature": -0.02, "tint": 0.0,
-                "grade_name": "Moody Desaturated",
+                "r_blacks": 0.028, "r_shadows": 0.207, "r_mid": 0.449, "r_highlights": 0.735, "r_whites": 0.961,
+                "g_blacks": 0.034, "g_shadows": 0.213, "g_mid": 0.457, "g_highlights": 0.745, "g_whites": 0.972,
+                "b_blacks": 0.054, "b_shadows": 0.237, "b_mid": 0.482, "b_highlights": 0.766, "b_whites": 0.987,
+                "smat_rr": 0.642, "smat_rg": 0.316, "smat_rb": 0.031,
+                "smat_gr": 0.095, "smat_gg": 0.871, "smat_gb": 0.032,
+                "smat_br": 0.104, "smat_bg": 0.342, "smat_bb": 0.588,
+                "hmat_rr": 0.644, "hmat_rg": 0.319, "hmat_rb": 0.033,
+                "hmat_gr": 0.095, "hmat_gg": 0.873, "hmat_gb": 0.032,
+                "hmat_br": 0.097, "hmat_bg": 0.334, "hmat_bb": 0.580,
+                "saturation": 0.55, "grade_name": "Moody Desaturated",
             },
         },
         "Golden Hour": {
             "desc": "Warm, golden sunlight. Rich amber tones. Terrence Malick vibes.",
             "params": {
-                "curve_blacks": 0.02, "curve_shadows": 0.24, "curve_midpoint": 0.52,
-                "curve_highlights": 0.78, "curve_whites": 0.98,
-                "shadows_r": 0.05, "shadows_g": 0.02, "shadows_b": -0.04,
-                "midtones_r": 1.08, "midtones_g": 1.02, "midtones_b": 0.88,
-                "highlights_r": 0.08, "highlights_g": 0.04, "highlights_b": -0.06,
-                "contrast": 1.05, "saturation": 1.15, "temperature": 0.12, "tint": 0.02,
-                "grade_name": "Golden Hour",
+                "r_blacks": 0.143, "r_shadows": 0.395, "r_mid": 0.694, "r_highlights": 0.960, "r_whites": 1.000,
+                "g_blacks": 0.026, "g_shadows": 0.264, "g_mid": 0.563, "g_highlights": 0.838, "g_whites": 1.000,
+                "b_blacks": 0.000, "b_shadows": 0.063, "b_mid": 0.342, "b_highlights": 0.629, "b_whites": 0.867,
+                "smat_rr": 1.057, "smat_rg": -0.108, "smat_rb": -0.004,
+                "smat_gr": -0.030, "smat_gg": 1.038, "smat_gb": -0.009,
+                "smat_br": -0.017, "smat_bg": -0.046, "smat_bb": 1.164,
+                "hmat_rr": 1.115, "hmat_rg": -0.120, "hmat_rb": -0.015,
+                "hmat_gr": -0.032, "hmat_gg": 1.054, "hmat_gb": -0.012,
+                "hmat_br": -0.015, "hmat_bg": -0.049, "hmat_bb": 1.083,
+                "saturation": 1.15, "grade_name": "Golden Hour",
             },
         },
         "Noir": {
             "desc": "Dark, contrasty, near-monochrome. Classic film noir mood.",
             "params": {
-                "curve_blacks": 0.0, "curve_shadows": 0.18, "curve_midpoint": 0.42,
-                "curve_highlights": 0.72, "curve_whites": 0.95,
-                "shadows_r": 0.0, "shadows_g": 0.0, "shadows_b": 0.02,
-                "midtones_r": 1.0, "midtones_g": 1.0, "midtones_b": 1.0,
-                "highlights_r": 0.0, "highlights_g": 0.0, "highlights_b": 0.0,
-                "contrast": 1.45, "saturation": 0.15, "temperature": -0.02, "tint": 0.0,
-                "grade_name": "Noir",
+                "r_blacks": 0.002, "r_shadows": 0.034, "r_mid": 0.382, "r_highlights": 0.817, "r_whites": 0.997,
+                "g_blacks": 0.002, "g_shadows": 0.036, "g_mid": 0.384, "g_highlights": 0.818, "g_whites": 0.998,
+                "b_blacks": 0.006, "b_shadows": 0.040, "b_mid": 0.387, "b_highlights": 0.820, "b_whites": 0.998,
+                "smat_rr": 0.335, "smat_rg": 0.594, "smat_rb": 0.055,
+                "smat_gr": 0.179, "smat_gg": 0.747, "smat_gb": 0.056,
+                "smat_br": 0.182, "smat_bg": 0.602, "smat_bb": 0.212,
+                "hmat_rr": 0.339, "hmat_rg": 0.630, "hmat_rb": 0.061,
+                "hmat_gr": 0.181, "hmat_gg": 0.790, "hmat_gb": 0.060,
+                "hmat_br": 0.182, "hmat_bg": 0.635, "hmat_bb": 0.215,
+                "saturation": 0.15, "grade_name": "Noir",
             },
         },
         "Pastel Faded": {
             "desc": "Light, airy, lifted everything. Instagram/Pinterest aesthetic.",
             "params": {
-                "curve_blacks": 0.08, "curve_shadows": 0.28, "curve_midpoint": 0.52,
-                "curve_highlights": 0.74, "curve_whites": 0.92,
-                "shadows_r": 0.03, "shadows_g": 0.02, "shadows_b": 0.04,
-                "midtones_r": 1.02, "midtones_g": 1.01, "midtones_b": 1.03,
-                "highlights_r": 0.02, "highlights_g": 0.01, "highlights_b": 0.02,
-                "contrast": 0.80, "saturation": 0.65, "temperature": 0.02, "tint": 0.01,
-                "grade_name": "Pastel Faded",
+                "r_blacks": 0.205, "r_shadows": 0.364, "r_mid": 0.554, "r_highlights": 0.726, "r_whites": 0.867,
+                "g_blacks": 0.191, "g_shadows": 0.350, "g_mid": 0.539, "g_highlights": 0.712, "g_whites": 0.854,
+                "b_blacks": 0.200, "b_shadows": 0.358, "b_mid": 0.546, "b_highlights": 0.717, "b_whites": 0.856,
+                "smat_rr": 0.726, "smat_rg": 0.258, "smat_rb": 0.027,
+                "smat_gr": 0.073, "smat_gg": 0.899, "smat_gb": 0.024,
+                "smat_br": 0.076, "smat_bg": 0.256, "smat_bb": 0.673,
+                "hmat_rr": 0.724, "hmat_rg": 0.255, "hmat_rb": 0.025,
+                "hmat_gr": 0.074, "hmat_gg": 0.899, "hmat_gb": 0.025,
+                "hmat_br": 0.075, "hmat_bg": 0.254, "hmat_bb": 0.671,
+                "saturation": 0.65, "grade_name": "Pastel Faded",
             },
         },
         "High Contrast Drama": {
             "desc": "Punchy, dramatic, deep blacks and bright whites.",
             "params": {
-                "curve_blacks": 0.0, "curve_shadows": 0.15, "curve_midpoint": 0.50,
-                "curve_highlights": 0.85, "curve_whites": 1.0,
-                "shadows_r": -0.02, "shadows_g": -0.01, "shadows_b": 0.0,
-                "midtones_r": 1.02, "midtones_g": 1.0, "midtones_b": 0.98,
-                "highlights_r": 0.03, "highlights_g": 0.02, "highlights_b": 0.0,
-                "contrast": 1.60, "saturation": 1.10, "temperature": 0.02, "tint": 0.0,
-                "grade_name": "High Contrast Drama",
+                "r_blacks": 0.011, "r_shadows": 0.011, "r_mid": 0.523, "r_highlights": 1.000, "r_whites": 1.000,
+                "g_blacks": 0.000, "g_shadows": 0.000, "g_mid": 0.505, "g_highlights": 1.000, "g_whites": 1.000,
+                "b_blacks": 0.000, "b_shadows": 0.000, "b_mid": 0.481, "b_highlights": 0.989, "b_whites": 0.989,
+                "smat_rr": 1.043, "smat_rg": -0.050, "smat_rb": -0.010,
+                "smat_gr": -0.018, "smat_gg": 0.987, "smat_gb": -0.009,
+                "smat_br": -0.011, "smat_bg": -0.033, "smat_bb": 1.048,
+                "hmat_rr": 1.052, "hmat_rg": -0.041, "hmat_rb": -0.004,
+                "hmat_gr": -0.007, "hmat_gg": 1.022, "hmat_gb": 0.001,
+                "hmat_br": -0.011, "hmat_bg": -0.032, "hmat_bb": 1.048,
+                "saturation": 1.10, "grade_name": "High Contrast Drama",
             },
         },
     },
@@ -174,61 +231,76 @@ PRESETS = {
         "Kodak Vision3 500T": {
             "desc": "Tungsten motion picture stock. Warm highlights, blue shadows under daylight.",
             "params": {
-                "curve_blacks": 0.03, "curve_shadows": 0.23, "curve_midpoint": 0.50,
-                "curve_highlights": 0.77, "curve_whites": 0.97,
-                "shadows_r": -0.02, "shadows_g": 0.0, "shadows_b": 0.06,
-                "midtones_r": 1.04, "midtones_g": 1.0, "midtones_b": 0.94,
-                "highlights_r": 0.06, "highlights_g": 0.03, "highlights_b": -0.04,
-                "contrast": 1.12, "saturation": 1.05, "temperature": 0.05, "tint": 0.01,
-                "grade_name": "Kodak Vision3 500T",
+                "r_blacks": 0.027, "r_shadows": 0.233, "r_mid": 0.562, "r_highlights": 0.883, "r_whites": 1.000,
+                "g_blacks": 0.003, "g_shadows": 0.206, "g_mid": 0.518, "g_highlights": 0.829, "g_whites": 1.000,
+                "b_blacks": 0.025, "b_shadows": 0.191, "b_mid": 0.462, "b_highlights": 0.744, "b_whites": 0.934,
+                "smat_rr": 1.052, "smat_rg": -0.073, "smat_rb": -0.014,
+                "smat_gr": -0.018, "smat_gg": 1.013, "smat_gb": -0.010,
+                "smat_br": -0.020, "smat_bg": -0.058, "smat_bb": 1.069,
+                "hmat_rr": 1.075, "hmat_rg": -0.056, "hmat_rb": -0.004,
+                "hmat_gr": -0.014, "hmat_gg": 1.034, "hmat_gb": -0.005,
+                "hmat_br": -0.012, "hmat_bg": -0.046, "hmat_bb": 1.073,
+                "saturation": 1.05, "grade_name": "Kodak Vision3 500T",
             },
         },
         "Kodak Portra 400": {
             "desc": "Portrait film. Low contrast, warm skin tones, muted greens.",
             "params": {
-                "curve_blacks": 0.04, "curve_shadows": 0.25, "curve_midpoint": 0.51,
-                "curve_highlights": 0.76, "curve_whites": 0.96,
-                "shadows_r": 0.03, "shadows_g": 0.01, "shadows_b": -0.01,
-                "midtones_r": 1.03, "midtones_g": 0.99, "midtones_b": 0.96,
-                "highlights_r": 0.04, "highlights_g": 0.02, "highlights_b": -0.02,
-                "contrast": 0.92, "saturation": 0.88, "temperature": 0.05, "tint": 0.02,
-                "grade_name": "Kodak Portra 400",
+                "r_blacks": 0.139, "r_shadows": 0.337, "r_mid": 0.577, "r_highlights": 0.806, "r_whites": 0.988,
+                "g_blacks": 0.092, "g_shadows": 0.286, "g_mid": 0.528, "g_highlights": 0.761, "g_whites": 0.948,
+                "b_blacks": 0.045, "b_shadows": 0.230, "b_mid": 0.467, "b_highlights": 0.700, "b_whites": 0.888,
+                "smat_rr": 0.909, "smat_rg": 0.096, "smat_rb": 0.011,
+                "smat_gr": 0.025, "smat_gg": 0.963, "smat_gb": 0.009,
+                "smat_br": 0.020, "smat_bg": 0.071, "smat_bb": 0.884,
+                "hmat_rr": 0.905, "hmat_rg": 0.092, "hmat_rb": 0.009,
+                "hmat_gr": 0.025, "hmat_gg": 0.966, "hmat_gb": 0.008,
+                "hmat_br": 0.024, "hmat_bg": 0.078, "hmat_bb": 0.888,
+                "saturation": 0.88, "grade_name": "Kodak Portra 400",
             },
         },
         "Fuji Velvia 50": {
             "desc": "Slide film. Extremely saturated, deep blacks, vivid greens and blues.",
             "params": {
-                "curve_blacks": 0.0, "curve_shadows": 0.20, "curve_midpoint": 0.50,
-                "curve_highlights": 0.80, "curve_whites": 1.0,
-                "shadows_r": -0.01, "shadows_g": 0.02, "shadows_b": 0.01,
-                "midtones_r": 0.98, "midtones_g": 1.04, "midtones_b": 1.02,
-                "highlights_r": 0.02, "highlights_g": 0.03, "highlights_b": 0.01,
-                "contrast": 1.30, "saturation": 1.45, "temperature": -0.02, "tint": -0.01,
-                "grade_name": "Fuji Velvia 50",
+                "r_blacks": 0.000, "r_shadows": 0.068, "r_mid": 0.469, "r_highlights": 0.884, "r_whites": 0.985,
+                "g_blacks": 0.023, "g_shadows": 0.145, "g_mid": 0.541, "g_highlights": 0.923, "g_whites": 0.998,
+                "b_blacks": 0.021, "b_shadows": 0.136, "b_mid": 0.526, "b_highlights": 0.909, "b_whites": 1.000,
+                "smat_rr": 1.157, "smat_rg": -0.069, "smat_rb": 0.006,
+                "smat_gr": -0.087, "smat_gg": 1.107, "smat_gb": -0.044,
+                "smat_br": -0.035, "smat_bg": -0.129, "smat_bb": 1.161,
+                "hmat_rr": 1.123, "hmat_rg": -0.111, "hmat_rb": -0.018,
+                "hmat_gr": -0.052, "hmat_gg": 1.072, "hmat_gb": -0.016,
+                "hmat_br": -0.045, "hmat_bg": -0.143, "hmat_bb": 1.165,
+                "saturation": 1.45, "grade_name": "Fuji Velvia 50",
             },
         },
         "CineStill 800T": {
             "desc": "Tungsten cinema stock. Halation glow, amber cast, lifted shadows.",
             "params": {
-                "curve_blacks": 0.05, "curve_shadows": 0.24, "curve_midpoint": 0.50,
-                "curve_highlights": 0.76, "curve_whites": 0.96,
-                "shadows_r": 0.06, "shadows_g": 0.0, "shadows_b": -0.03,
-                "midtones_r": 1.06, "midtones_g": 0.98, "midtones_b": 0.92,
-                "highlights_r": 0.08, "highlights_g": 0.02, "highlights_b": -0.05,
-                "contrast": 1.05, "saturation": 1.10, "temperature": 0.10, "tint": 0.03,
-                "grade_name": "CineStill 800T",
+                "r_blacks": 0.171, "r_shadows": 0.384, "r_mid": 0.659, "r_highlights": 0.926, "r_whites": 1.000,
+                "g_blacks": 0.033, "g_shadows": 0.231, "g_mid": 0.510, "g_highlights": 0.792, "g_whites": 1.000,
+                "b_blacks": 0.000, "b_shadows": 0.110, "b_mid": 0.373, "b_highlights": 0.651, "b_whites": 0.876,
+                "smat_rr": 1.052, "smat_rg": -0.086, "smat_rb": -0.006,
+                "smat_gr": -0.020, "smat_gg": 1.031, "smat_gb": -0.006,
+                "smat_br": -0.021, "smat_bg": -0.056, "smat_bb": 1.113,
+                "hmat_rr": 1.092, "hmat_rg": -0.087, "hmat_rb": -0.010,
+                "hmat_gr": -0.021, "hmat_gg": 1.032, "hmat_gb": -0.007,
+                "hmat_br": -0.014, "hmat_bg": -0.050, "hmat_bb": 1.077,
+                "saturation": 1.10, "grade_name": "CineStill 800T",
             },
         },
         "Kodachrome 64": {
             "desc": "Legendary slide film. Deep reds, strong cyan-blue, warm midtones.",
             "params": {
-                "curve_blacks": 0.01, "curve_shadows": 0.22, "curve_midpoint": 0.50,
-                "curve_highlights": 0.79, "curve_whites": 0.99,
-                "shadows_r": 0.02, "shadows_g": -0.01, "shadows_b": -0.03,
-                "midtones_r": 1.06, "midtones_g": 1.0, "midtones_b": 0.94,
-                "highlights_r": 0.05, "highlights_g": 0.01, "highlights_b": -0.04,
-                "contrast": 1.20, "saturation": 1.25, "temperature": 0.06, "tint": 0.01,
-                "grade_name": "Kodachrome 64",
+                "r_blacks": 0.069, "r_shadows": 0.258, "r_mid": 0.606, "r_highlights": 0.950, "r_whites": 1.000,
+                "g_blacks": 0.000, "g_shadows": 0.157, "g_mid": 0.500, "g_highlights": 0.855, "g_whites": 1.000,
+                "b_blacks": 0.000, "b_shadows": 0.068, "b_mid": 0.391, "b_highlights": 0.749, "b_whites": 0.916,
+                "smat_rr": 1.098, "smat_rg": -0.207, "smat_rb": -0.021,
+                "smat_gr": -0.054, "smat_gg": 1.067, "smat_gb": -0.023,
+                "smat_br": -0.025, "smat_bg": -0.075, "smat_bb": 1.221,
+                "hmat_rr": 1.168, "hmat_rg": -0.174, "hmat_rb": -0.018,
+                "hmat_gr": -0.041, "hmat_gg": 1.073, "hmat_gb": -0.014,
+                "hmat_br": -0.027, "hmat_bg": -0.081, "hmat_bb": 1.146,
+                "saturation": 1.25, "grade_name": "Kodachrome 64",
             },
         },
     },
@@ -236,37 +308,46 @@ PRESETS = {
         "S-Log3 to Rec.709": {
             "desc": "Sony S-Log3 to standard display. Adds contrast and saturation to flat footage.",
             "params": {
-                "curve_blacks": 0.0, "curve_shadows": 0.12, "curve_midpoint": 0.45,
-                "curve_highlights": 0.82, "curve_whites": 1.0,
-                "shadows_r": 0.0, "shadows_g": 0.0, "shadows_b": 0.0,
-                "midtones_r": 1.0, "midtones_g": 1.0, "midtones_b": 1.0,
-                "highlights_r": 0.0, "highlights_g": 0.0, "highlights_b": 0.0,
-                "contrast": 1.65, "saturation": 1.30, "temperature": 0.0, "tint": 0.0,
-                "grade_name": "S-Log3 to Rec709",
+                "r_blacks": 0.000, "r_shadows": 0.000, "r_mid": 0.417, "r_highlights": 1.000, "r_whites": 1.000,
+                "g_blacks": 0.000, "g_shadows": 0.000, "g_mid": 0.417, "g_highlights": 1.000, "g_whites": 1.000,
+                "b_blacks": 0.000, "b_shadows": 0.000, "b_mid": 0.417, "b_highlights": 1.000, "b_whites": 1.000,
+                "smat_rr": 1.060, "smat_rg": -0.048, "smat_rb": -0.004,
+                "smat_gr": -0.032, "smat_gg": 0.985, "smat_gb": -0.014,
+                "smat_br": -0.014, "smat_bg": -0.049, "smat_bb": 1.065,
+                "hmat_rr": 1.049, "hmat_rg": -0.066, "hmat_rb": -0.008,
+                "hmat_gr": -0.028, "hmat_gg": 1.033, "hmat_gb": -0.008,
+                "hmat_br": -0.020, "hmat_bg": -0.060, "hmat_bb": 1.053,
+                "saturation": 1.30, "grade_name": "S-Log3 to Rec709",
             },
         },
         "ARRI Log-C to Rec.709": {
             "desc": "ARRI Alexa Log-C to standard display. Smooth highlight rolloff.",
             "params": {
-                "curve_blacks": 0.0, "curve_shadows": 0.14, "curve_midpoint": 0.47,
-                "curve_highlights": 0.83, "curve_whites": 1.0,
-                "shadows_r": 0.0, "shadows_g": 0.0, "shadows_b": 0.0,
-                "midtones_r": 1.0, "midtones_g": 1.0, "midtones_b": 1.0,
-                "highlights_r": 0.0, "highlights_g": 0.0, "highlights_b": 0.0,
-                "contrast": 1.55, "saturation": 1.25, "temperature": 0.0, "tint": 0.0,
-                "grade_name": "ARRI LogC to Rec709",
+                "r_blacks": 0.000, "r_shadows": 0.000, "r_mid": 0.454, "r_highlights": 1.000, "r_whites": 1.000,
+                "g_blacks": 0.000, "g_shadows": 0.000, "g_mid": 0.454, "g_highlights": 1.000, "g_whites": 1.000,
+                "b_blacks": 0.000, "b_shadows": 0.000, "b_mid": 0.454, "b_highlights": 1.000, "b_whites": 1.000,
+                "smat_rr": 1.051, "smat_rg": -0.035, "smat_rb": 0.001,
+                "smat_gr": -0.024, "smat_gg": 1.003, "smat_gb": -0.008,
+                "smat_br": -0.008, "smat_bg": -0.034, "smat_bb": 1.056,
+                "hmat_rr": 1.040, "hmat_rg": -0.056, "hmat_rb": -0.008,
+                "hmat_gr": -0.025, "hmat_gg": 1.027, "hmat_gb": -0.008,
+                "hmat_br": -0.018, "hmat_bg": -0.050, "hmat_bb": 1.042,
+                "saturation": 1.25, "grade_name": "ARRI LogC to Rec709",
             },
         },
         "Canon C-Log to Rec.709": {
             "desc": "Canon C-Log to standard display. Good starting point for Canon cinema cameras.",
             "params": {
-                "curve_blacks": 0.0, "curve_shadows": 0.13, "curve_midpoint": 0.46,
-                "curve_highlights": 0.81, "curve_whites": 1.0,
-                "shadows_r": 0.0, "shadows_g": 0.0, "shadows_b": 0.0,
-                "midtones_r": 1.0, "midtones_g": 1.0, "midtones_b": 1.0,
-                "highlights_r": 0.0, "highlights_g": 0.0, "highlights_b": 0.0,
-                "contrast": 1.60, "saturation": 1.28, "temperature": 0.0, "tint": 0.0,
-                "grade_name": "Canon CLog to Rec709",
+                "r_blacks": 0.000, "r_shadows": 0.000, "r_mid": 0.436, "r_highlights": 0.996, "r_whites": 1.000,
+                "g_blacks": 0.000, "g_shadows": 0.000, "g_mid": 0.436, "g_highlights": 0.996, "g_whites": 1.000,
+                "b_blacks": 0.000, "b_shadows": 0.000, "b_mid": 0.436, "b_highlights": 0.996, "b_whites": 1.000,
+                "smat_rr": 1.056, "smat_rg": -0.043, "smat_rb": -0.002,
+                "smat_gr": -0.028, "smat_gg": 0.983, "smat_gb": -0.011,
+                "smat_br": -0.012, "smat_bg": -0.043, "smat_bb": 1.061,
+                "hmat_rr": 1.043, "hmat_rg": -0.063, "hmat_rb": -0.008,
+                "hmat_gr": -0.030, "hmat_gg": 1.031, "hmat_gb": -0.010,
+                "hmat_br": -0.019, "hmat_bg": -0.057, "hmat_bb": 1.046,
+                "saturation": 1.28, "grade_name": "Canon CLog to Rec709",
             },
         },
     },
@@ -274,73 +355,91 @@ PRESETS = {
         "Horror Green": {
             "desc": "Sickly green tint, dark, unsettling. Classic horror film look.",
             "params": {
-                "curve_blacks": 0.02, "curve_shadows": 0.18, "curve_midpoint": 0.44,
-                "curve_highlights": 0.72, "curve_whites": 0.95,
-                "shadows_r": -0.04, "shadows_g": 0.06, "shadows_b": -0.02,
-                "midtones_r": 0.92, "midtones_g": 1.08, "midtones_b": 0.94,
-                "highlights_r": -0.04, "highlights_g": 0.04, "highlights_b": -0.02,
-                "contrast": 1.25, "saturation": 0.70, "temperature": -0.06, "tint": -0.08,
-                "grade_name": "Horror Green",
+                "r_blacks": 0.012, "r_shadows": 0.041, "r_mid": 0.352, "r_highlights": 0.707, "r_whites": 0.932,
+                "g_blacks": 0.049, "g_shadows": 0.149, "g_mid": 0.470, "g_highlights": 0.801, "g_whites": 0.973,
+                "b_blacks": 0.024, "b_shadows": 0.097, "b_mid": 0.413, "b_highlights": 0.766, "b_whites": 0.988,
+                "smat_rr": 0.761, "smat_rg": 0.165, "smat_rb": 0.002,
+                "smat_gr": 0.051, "smat_gg": 0.942, "smat_gb": 0.010,
+                "smat_br": 0.044, "smat_bg": 0.171, "smat_bb": 0.744,
+                "hmat_rr": 0.792, "hmat_rg": 0.188, "hmat_rb": 0.026,
+                "hmat_gr": 0.066, "hmat_gg": 0.942, "hmat_gb": 0.025,
+                "hmat_br": 0.062, "hmat_bg": 0.196, "hmat_bb": 0.766,
+                "saturation": 0.70, "grade_name": "Horror Green",
             },
         },
         "Romantic Warm": {
             "desc": "Soft, warm, dreamy. Wedding films and love stories.",
             "params": {
-                "curve_blacks": 0.04, "curve_shadows": 0.26, "curve_midpoint": 0.52,
-                "curve_highlights": 0.77, "curve_whites": 0.96,
-                "shadows_r": 0.04, "shadows_g": 0.01, "shadows_b": -0.02,
-                "midtones_r": 1.05, "midtones_g": 1.01, "midtones_b": 0.94,
-                "highlights_r": 0.06, "highlights_g": 0.03, "highlights_b": -0.03,
-                "contrast": 0.90, "saturation": 0.95, "temperature": 0.08, "tint": 0.03,
-                "grade_name": "Romantic Warm",
+                "r_blacks": 0.185, "r_shadows": 0.391, "r_mid": 0.628, "r_highlights": 0.850, "r_whites": 0.998,
+                "g_blacks": 0.110, "g_shadows": 0.313, "g_mid": 0.551, "g_highlights": 0.780, "g_whites": 0.952,
+                "b_blacks": 0.025, "b_shadows": 0.211, "b_mid": 0.443, "b_highlights": 0.672, "b_whites": 0.850,
+                "smat_rr": 0.968, "smat_rg": 0.037, "smat_rb": 0.004,
+                "smat_gr": 0.010, "smat_gg": 0.986, "smat_gb": 0.003,
+                "smat_br": 0.006, "smat_bg": 0.023, "smat_bb": 0.952,
+                "hmat_rr": 0.971, "hmat_rg": 0.035, "hmat_rb": 0.003,
+                "hmat_gr": 0.011, "hmat_gg": 0.985, "hmat_gb": 0.004,
+                "hmat_br": 0.010, "hmat_bg": 0.029, "hmat_bb": 0.955,
+                "saturation": 0.95, "grade_name": "Romantic Warm",
             },
         },
         "Sci-Fi Blue": {
             "desc": "Cold, clinical blue. Futuristic and sterile. Blade Runner vibes.",
             "params": {
-                "curve_blacks": 0.03, "curve_shadows": 0.20, "curve_midpoint": 0.47,
-                "curve_highlights": 0.76, "curve_whites": 0.97,
-                "shadows_r": -0.06, "shadows_g": -0.02, "shadows_b": 0.08,
-                "midtones_r": 0.90, "midtones_g": 0.96, "midtones_b": 1.10,
-                "highlights_r": -0.04, "highlights_g": 0.0, "highlights_b": 0.08,
-                "contrast": 1.20, "saturation": 0.85, "temperature": -0.10, "tint": -0.02,
-                "grade_name": "Sci-Fi Blue",
+                "r_blacks": 0.002, "r_shadows": 0.025, "r_mid": 0.340, "r_highlights": 0.710, "r_whites": 0.917,
+                "g_blacks": 0.002, "g_shadows": 0.106, "g_mid": 0.431, "g_highlights": 0.794, "g_whites": 0.991,
+                "b_blacks": 0.134, "b_shadows": 0.276, "b_mid": 0.598, "b_highlights": 0.930, "b_whites": 0.996,
+                "smat_rr": 0.893, "smat_rg": 0.082, "smat_rb": -0.004,
+                "smat_gr": 0.021, "smat_gg": 0.967, "smat_gb": -0.005,
+                "smat_br": 0.036, "smat_bg": 0.120, "smat_bb": 0.888,
+                "hmat_rr": 0.908, "hmat_rg": 0.090, "hmat_rb": 0.013,
+                "hmat_gr": 0.027, "hmat_gg": 0.984, "hmat_gb": 0.010,
+                "hmat_br": 0.034, "hmat_bg": 0.119, "hmat_bb": 0.881,
+                "saturation": 0.85, "grade_name": "Sci-Fi Blue",
             },
         },
         "Western Dusty": {
             "desc": "Warm, desaturated, dusty. Spaghetti western, desert landscapes.",
             "params": {
-                "curve_blacks": 0.05, "curve_shadows": 0.26, "curve_midpoint": 0.52,
-                "curve_highlights": 0.76, "curve_whites": 0.94,
-                "shadows_r": 0.04, "shadows_g": 0.03, "shadows_b": -0.02,
-                "midtones_r": 1.06, "midtones_g": 1.02, "midtones_b": 0.90,
-                "highlights_r": 0.05, "highlights_g": 0.03, "highlights_b": -0.04,
-                "contrast": 0.95, "saturation": 0.75, "temperature": 0.08, "tint": 0.02,
-                "grade_name": "Western Dusty",
+                "r_blacks": 0.160, "r_shadows": 0.366, "r_mid": 0.613, "r_highlights": 0.836, "r_whites": 0.989,
+                "g_blacks": 0.115, "g_shadows": 0.317, "g_mid": 0.563, "g_highlights": 0.788, "g_whites": 0.956,
+                "b_blacks": 0.030, "b_shadows": 0.212, "b_mid": 0.454, "b_highlights": 0.687, "b_whites": 0.865,
+                "smat_rr": 0.814, "smat_rg": 0.199, "smat_rb": 0.022,
+                "smat_gr": 0.053, "smat_gg": 0.928, "smat_gb": 0.018,
+                "smat_br": 0.033, "smat_bg": 0.124, "smat_bb": 0.758,
+                "hmat_rr": 0.809, "hmat_rg": 0.189, "hmat_rb": 0.018,
+                "hmat_gr": 0.053, "hmat_gg": 0.929, "hmat_gb": 0.018,
+                "hmat_br": 0.049, "hmat_bg": 0.150, "hmat_bb": 0.771,
+                "saturation": 0.75, "grade_name": "Western Dusty",
             },
         },
         "Matrix Green": {
             "desc": "Heavy green tint with desaturation. The Matrix digital rain look.",
             "params": {
-                "curve_blacks": 0.01, "curve_shadows": 0.19, "curve_midpoint": 0.46,
-                "curve_highlights": 0.75, "curve_whites": 0.97,
-                "shadows_r": -0.06, "shadows_g": 0.08, "shadows_b": -0.04,
-                "midtones_r": 0.88, "midtones_g": 1.12, "midtones_b": 0.90,
-                "highlights_r": -0.04, "highlights_g": 0.06, "highlights_b": -0.03,
-                "contrast": 1.30, "saturation": 0.60, "temperature": -0.05, "tint": -0.10,
-                "grade_name": "Matrix Green",
+                "r_blacks": 0.024, "r_shadows": 0.055, "r_mid": 0.378, "r_highlights": 0.767, "r_whites": 0.936,
+                "g_blacks": 0.072, "g_shadows": 0.167, "g_mid": 0.510, "g_highlights": 0.860, "g_whites": 0.966,
+                "b_blacks": 0.030, "b_shadows": 0.087, "b_mid": 0.422, "b_highlights": 0.806, "b_whites": 0.972,
+                "smat_rr": 0.681, "smat_rg": 0.215, "smat_rb": 0.003,
+                "smat_gr": 0.072, "smat_gg": 0.935, "smat_gb": 0.016,
+                "smat_br": 0.056, "smat_bg": 0.221, "smat_bb": 0.650,
+                "hmat_rr": 0.727, "hmat_rg": 0.244, "hmat_rb": 0.035,
+                "hmat_gr": 0.097, "hmat_gg": 0.903, "hmat_gb": 0.036,
+                "hmat_br": 0.087, "hmat_bg": 0.253, "hmat_bb": 0.682,
+                "saturation": 0.60, "grade_name": "Matrix Green",
             },
         },
         "Cyberpunk Neon": {
             "desc": "Vivid magenta/cyan, high saturation. Neon-lit nightlife aesthetic.",
             "params": {
-                "curve_blacks": 0.03, "curve_shadows": 0.21, "curve_midpoint": 0.48,
-                "curve_highlights": 0.78, "curve_whites": 0.97,
-                "shadows_r": 0.04, "shadows_g": -0.04, "shadows_b": 0.08,
-                "midtones_r": 1.06, "midtones_g": 0.92, "midtones_b": 1.08,
-                "highlights_r": 0.06, "highlights_g": -0.02, "highlights_b": 0.06,
-                "contrast": 1.25, "saturation": 1.30, "temperature": -0.03, "tint": 0.05,
-                "grade_name": "Cyberpunk Neon",
+                "r_blacks": 0.048, "r_shadows": 0.213, "r_mid": 0.562, "r_highlights": 0.924, "r_whites": 0.992,
+                "g_blacks": 0.011, "g_shadows": 0.088, "g_mid": 0.420, "g_highlights": 0.823, "g_whites": 0.995,
+                "b_blacks": 0.153, "b_shadows": 0.310, "b_mid": 0.638, "b_highlights": 0.974, "b_whites": 1.000,
+                "smat_rr": 1.120, "smat_rg": -0.203, "smat_rb": -0.024,
+                "smat_gr": -0.047, "smat_gg": 1.086, "smat_gb": -0.021,
+                "smat_br": -0.068, "smat_bg": -0.268, "smat_bb": 1.121,
+                "hmat_rr": 1.174, "hmat_rg": -0.177, "hmat_rb": -0.019,
+                "hmat_gr": -0.052, "hmat_gg": 1.093, "hmat_gb": -0.019,
+                "hmat_br": -0.068, "hmat_bg": -0.259, "hmat_bb": 1.274,
+                "saturation": 1.30, "grade_name": "Cyberpunk Neon",
             },
         },
     },
@@ -369,47 +468,50 @@ class LUTEngine:
     def generate_lut(self, params):
         lut = self.identity.copy()
         s = self.size
-        # Step 1: Tone curve
         pts_x = np.array([0.0, 0.25, 0.5, 0.75, 1.0], dtype=np.float32)
-        pts_y = np.array([
-            params["curve_blacks"], params["curve_shadows"], params["curve_midpoint"],
-            params["curve_highlights"], params["curve_whites"],
+
+        # Step 1: Per-channel tone curves (R, G, B each get their own 5-point curve)
+        for ch, prefix in enumerate(["r", "g", "b"]):
+            pts_y = np.array([
+                params[f"{prefix}_blacks"], params[f"{prefix}_shadows"],
+                params[f"{prefix}_mid"], params[f"{prefix}_highlights"],
+                params[f"{prefix}_whites"],
+            ], dtype=np.float32)
+            flat = lut[:, :, :, ch].reshape(-1)
+            lut[:, :, :, ch] = np.interp(flat, pts_x, pts_y).reshape(s, s, s).astype(np.float32)
+
+        # Step 2: Dual shadow/highlight color matrices, blended by luminance
+        shadow_mat = np.array([
+            [params["smat_rr"], params["smat_rg"], params["smat_rb"]],
+            [params["smat_gr"], params["smat_gg"], params["smat_gb"]],
+            [params["smat_br"], params["smat_bg"], params["smat_bb"]],
         ], dtype=np.float32)
-        flat = lut.reshape(-1)
-        mapped = np.interp(flat, pts_x, pts_y).astype(np.float32)
-        lut = mapped.reshape(s, s, s, 3)
+        highlight_mat = np.array([
+            [params["hmat_rr"], params["hmat_rg"], params["hmat_rb"]],
+            [params["hmat_gr"], params["hmat_gg"], params["hmat_gb"]],
+            [params["hmat_br"], params["hmat_bg"], params["hmat_bb"]],
+        ], dtype=np.float32)
 
-        # Step 2: Contrast
-        c = params["contrast"]
-        lut = np.clip((lut - 0.5) * c + 0.5, 0, 1).astype(np.float32)
+        flat_pixels = lut.reshape(-1, 3)  # (N, 3)
+        lum = 0.2126 * flat_pixels[:, 0] + 0.7152 * flat_pixels[:, 1] + 0.0722 * flat_pixels[:, 2]
 
-        # Step 3: Lift/Gamma/Gain
-        for ch, suffix in enumerate(["_r", "_g", "_b"]):
-            shadow = params[f"shadows{suffix}"]
-            mid = params[f"midtones{suffix}"]
-            hi = params[f"highlights{suffix}"]
-            ch_data = lut[:, :, :, ch]
-            ch_data = ch_data + shadow * (1.0 - ch_data)
-            gamma = 1.0 / max(mid, 0.01)
-            ch_data = np.power(np.clip(ch_data, 1e-6, 1.0), gamma)
-            ch_data = ch_data * (1.0 + hi)
-            lut[:, :, :, ch] = ch_data
-        lut = np.clip(lut, 0, 1).astype(np.float32)
+        # Smoothstep blend: 0.0 at lum≤0.2 (full shadow), 1.0 at lum≥0.8 (full highlight)
+        t = np.clip((lum - 0.2) / 0.6, 0, 1).astype(np.float32)
+        blend = t * t * (3.0 - 2.0 * t)  # smoothstep
 
-        # Step 4: Temperature/Tint
-        t = params["temperature"]
-        ti = params["tint"]
-        lut[:, :, :, 0] += t * 0.5 + ti * 0.15
-        lut[:, :, :, 1] += ti * 0.3
-        lut[:, :, :, 2] -= t * 0.5 - ti * 0.15
-        lut = np.clip(lut, 0, 1).astype(np.float32)
+        shadow_result = flat_pixels @ shadow_mat.T    # (N, 3)
+        highlight_result = flat_pixels @ highlight_mat.T  # (N, 3)
+        mixed = shadow_result * (1.0 - blend[:, np.newaxis]) + highlight_result * blend[:, np.newaxis]
+        lut = np.clip(mixed.reshape(s, s, s, 3), 0, 1).astype(np.float32)
 
-        # Step 5: Saturation
+        # Step 3: Saturation
         sat = params["saturation"]
-        gray = 0.2126 * lut[:, :, :, 0] + 0.7152 * lut[:, :, :, 1] + 0.0722 * lut[:, :, :, 2]
-        for ch in range(3):
-            lut[:, :, :, ch] = gray + sat * (lut[:, :, :, ch] - gray)
-        lut = np.clip(lut, 0, 1).astype(np.float32)
+        if sat != 1.0:
+            gray = 0.2126 * lut[:, :, :, 0] + 0.7152 * lut[:, :, :, 1] + 0.0722 * lut[:, :, :, 2]
+            for ch in range(3):
+                lut[:, :, :, ch] = gray + sat * (lut[:, :, :, ch] - gray)
+            lut = np.clip(lut, 0, 1).astype(np.float32)
+
         return lut
 
     def interpolate_intensity(self, lut, intensity):
@@ -503,163 +605,144 @@ class PreviewEngine:
 # SECTION 5: Prompt Generator
 # ═══════════════════════════════════════════════════════════════════
 
-EXTRACT_PROMPT = """You are an elite Hollywood DIT (Digital Imaging Technician) and colorist with 20 years of experience grading feature films. You are analyzing frames from a video to reverse-engineer the exact color grade applied.
+EXTRACT_PROMPT = """You are an elite Hollywood colorist reverse-engineering a color grade from video frames. Your output will directly generate a 3D LUT (.cube file) for DaVinci Resolve / Premiere Pro.
 
-Your task: determine the PRECISE numeric color grading parameters that would recreate this look when applied to neutral/flat Rec.709 footage. These numbers will directly generate a 3D LUT (.cube file) used in DaVinci Resolve and Adobe Premiere Pro.
+The engine uses 34 parameters:
+- 15 tone curve values: separate R, G, B curves (5 control points each)
+- 9 shadow matrix values: 3x3 color mixing applied to dark areas
+- 9 highlight matrix values: 3x3 color mixing applied to bright areas
+- 1 saturation value
 
-ANALYZE THE FRAMES CAREFULLY. Look at:
-1. SHADOWS: What color cast is in the dark areas? Teal? Blue? Warm? Neutral?
-2. MIDTONES: What's the overall color bias? Warm skin tones? Cool steel? Green tint?
-3. HIGHLIGHTS: Are the bright areas warm (golden)? Cool (blue-white)? Clipped or rolled off?
-4. CONTRAST: Is it flat/low-contrast (lifted blacks, compressed highlights) or punchy/high-contrast?
-5. SATURATION: Are colors vivid/saturated or muted/desaturated?
-6. TONE CURVE: Are blacks crushed (true black) or lifted (milky/faded)? Are whites clipped or rolled off?
-7. OVERALL MOOD: What emotion does this grade convey?
+The two matrices are blended by luminance — shadows use smat_*, highlights use hmat_*.
+This is how real color grading works: "teal shadows + orange highlights" = different matrices for darks vs brights.
 
-Return ONLY a JSON object with these 18 parameters:
+ANALYZE THE FRAMES:
+1. Per channel (R, G, B): Are blacks lifted or crushed? Midpoint shifted? Whites rolled off?
+2. Shadow color mixing: What color cast is in the DARK areas? Teal? Blue? Warm? Green?
+3. Highlight color mixing: What color cast is in the BRIGHT areas? Orange? Golden? Cool?
+4. Saturation: Vivid, muted, or near-monochrome?
+
+Return ONLY a JSON object with these 35 fields:
 
 {
-  "shadows_r": <float>,    "shadows_g": <float>,    "shadows_b": <float>,
-  "midtones_r": <float>,   "midtones_g": <float>,   "midtones_b": <float>,
-  "highlights_r": <float>, "highlights_g": <float>, "highlights_b": <float>,
-  "contrast": <float>,
+  "r_blacks": <float>, "r_shadows": <float>, "r_mid": <float>, "r_highlights": <float>, "r_whites": <float>,
+  "g_blacks": <float>, "g_shadows": <float>, "g_mid": <float>, "g_highlights": <float>, "g_whites": <float>,
+  "b_blacks": <float>, "b_shadows": <float>, "b_mid": <float>, "b_highlights": <float>, "b_whites": <float>,
+  "smat_rr": <float>, "smat_rg": <float>, "smat_rb": <float>,
+  "smat_gr": <float>, "smat_gg": <float>, "smat_gb": <float>,
+  "smat_br": <float>, "smat_bg": <float>, "smat_bb": <float>,
+  "hmat_rr": <float>, "hmat_rg": <float>, "hmat_rb": <float>,
+  "hmat_gr": <float>, "hmat_gg": <float>, "hmat_gb": <float>,
+  "hmat_br": <float>, "hmat_bg": <float>, "hmat_bb": <float>,
   "saturation": <float>,
-  "temperature": <float>,
-  "tint": <float>,
-  "curve_blacks": <float>,
-  "curve_shadows": <float>,
-  "curve_midpoint": <float>,
-  "curve_highlights": <float>,
-  "curve_whites": <float>,
-  "grade_name": "<short descriptive name>"
+  "grade_name": "<short name>"
 }
 
-PARAMETER GUIDE (with visual meaning):
+PARAMETER GUIDE:
 
-SHADOWS (color offset in dark areas, -0.20 to 0.20, 0 = neutral):
-  - Teal/cyan shadows: shadows_r: -0.06, shadows_g: 0.02, shadows_b: 0.08
-  - Warm/amber shadows: shadows_r: 0.06, shadows_g: 0.02, shadows_b: -0.04
-  - Green shadows: shadows_r: -0.04, shadows_g: 0.06, shadows_b: -0.02
-  - Blue shadows: shadows_r: -0.04, shadows_g: -0.02, shadows_b: 0.08
-  - Subtle shift = 0.02-0.04, Strong shift = 0.08-0.15
+PER-CHANNEL TONE CURVES (0.0 to 1.0 each):
+  5 control points at input 0%, 25%, 50%, 75%, 100%. Identity: 0.0, 0.25, 0.50, 0.75, 1.0
+  - Lifted blacks (>0.0): faded/milky. R lifted + B not = warm faded blacks.
+  - Crushed blacks (=0.0): deep/dramatic.
+  - Rolled-off whites (<1.0): soft highlights. B rolled off = warm highlights.
+  - Pushed midpoint (>0.5): brighter midtones in that channel.
+  - S-curve (shadows<0.25, highlights>0.75): more contrast.
 
-MIDTONES (gamma/power multiplier, 0.5 to 1.5, 1.0 = no change):
-  - Warm midtones: midtones_r: 1.06, midtones_g: 1.0, midtones_b: 0.92
-  - Cool midtones: midtones_r: 0.92, midtones_g: 0.98, midtones_b: 1.08
-  - Green tint (Matrix): midtones_r: 0.88, midtones_g: 1.12, midtones_b: 0.90
-  - Values below 1.0 reduce that channel, above 1.0 boost it
+SHADOW MATRIX (smat_*, applied to dark pixels):
+  Controls color mixing in shadows/dark areas. Identity = [[1,0,0],[0,1,0],[0,0,1]]
+  Each row sums to ~1.0. smat_rr/rg/rb = how R,G,B inputs contribute to RED output in shadows.
 
-HIGHLIGHTS (color shift in bright areas, -0.20 to 0.20, 0 = neutral):
-  - Warm golden highlights: highlights_r: 0.08, highlights_g: 0.04, highlights_b: -0.06
-  - Cool blue highlights: highlights_r: -0.04, highlights_g: 0.0, highlights_b: 0.06
-  - Neutral highlights: all near 0.0
+  What to look for in DARK areas of the image:
+  - Teal/cyan shadows: smat_rb=0.6-1.0, smat_rr=0.2 (blue input → red output, creating teal)
+  - Warm/amber shadows: smat_rr=1.05, smat_rg=0.03 (slight warm push)
+  - Green shadows: smat_gg=1.05, smat_gr=0.03
+  - Blue shadows: smat_br=0.1, smat_bb=0.9, smat_bg=0.05
+  - Neutral shadows: identity matrix
 
-CONTRAST (0.5 to 2.0, 1.0 = no change):
-  - Flat/matte look: 0.75-0.90
-  - Normal: 1.0-1.15
-  - Punchy cinematic: 1.20-1.40
-  - Extreme (bleach bypass): 1.45-1.70
+HIGHLIGHT MATRIX (hmat_*, applied to bright pixels):
+  Controls color mixing in highlights/bright areas. Same format as shadow matrix.
+
+  What to look for in BRIGHT areas of the image:
+  - Orange/warm highlights: hmat_rr=1.05, hmat_rg=0.03, or hmat_br=0.6, hmat_bb=0.3
+  - Cool/blue highlights: hmat_bb=1.05, hmat_bg=0.03
+  - Golden highlights: hmat_rr=0.6, hmat_rb=0.4 (red from blue input)
+  - Neutral highlights: identity matrix
+
+CLASSIC LOOKS with shadow + highlight matrices:
+  - Teal & Orange: shadow teal (smat_rb=0.95, smat_br=0.65) + highlight warm (hmat_rr=1.05, hmat_rg=0.03)
+  - Bleach Bypass: both matrices = identity. Saturation 0.3-0.5.
+  - Cross-process: different channel swaps in shadows vs highlights
+  - Fincher cool: shadow slightly blue (smat_bb=1.05) + highlight neutral
+
+  IMPORTANT: Be bold with matrix values. Real cinematic LUTs have off-diagonals of 0.5-1.0
+  for strong looks. If shadows are clearly teal and highlights clearly orange, the shadow and
+  highlight matrices should be VERY different from each other. Keep each row summing to ~0.9-1.1.
 
 SATURATION (0.0 to 2.0, 1.0 = no change):
-  - Nearly monochrome: 0.10-0.20
-  - Desaturated/moody: 0.50-0.70
-  - Slightly muted: 0.80-0.95
-  - Normal: 1.0
-  - Vivid/punchy: 1.15-1.30
-  - Hyper-saturated: 1.40+
+  Near monochrome: 0.10-0.20 | Desaturated: 0.50-0.70 | Normal: 1.0 | Vivid: 1.15-1.30
 
-TEMPERATURE (-0.30 to 0.30, 0 = neutral):
-  - Cool/blue: -0.05 to -0.15
-  - Neutral: 0.0
-  - Warm/amber: 0.05 to 0.15
-  - Very warm (golden hour): 0.10 to 0.20
+Return ONLY the raw JSON. No markdown, no explanation."""
 
-TINT (-0.30 to 0.30, 0 = neutral):
-  - Green tint: -0.05 to -0.10
-  - Neutral: 0.0
-  - Magenta tint: 0.03 to 0.08
-
-TONE CURVE (5 control points mapping input brightness to output, 0.0 to 1.0):
-  curve_blacks (0.00-0.15): Black point. 0.0 = true black. Higher = lifted/faded/milky blacks.
-  curve_shadows (0.10-0.40): Quarter-tone response. Lower = darker shadows, higher = lighter.
-  curve_midpoint (0.30-0.70): Overall brightness pivot. 0.5 = neutral.
-  curve_highlights (0.60-0.90): Three-quarter response. Higher = brighter highlights.
-  curve_whites (0.85-1.00): White point. 1.0 = full white. Lower = rolled-off/soft highlights.
-
-  Examples:
-  - Standard S-curve (cinematic): blacks=0.02, shadows=0.20, mid=0.50, highlights=0.80, whites=0.98
-  - Lifted blacks (faded/vintage): blacks=0.06, shadows=0.26, mid=0.50, highlights=0.76, whites=0.94
-  - High contrast (drama): blacks=0.00, shadows=0.15, mid=0.50, highlights=0.85, whites=1.00
-  - Flat/log (washed out): blacks=0.08, shadows=0.30, mid=0.52, highlights=0.72, whites=0.90
-
-KNOWN FILM LOOKS (for reference):
-  - Teal & Orange (Transformers): strong blue shadows + warm orange highlights, boosted saturation
-  - Bleach Bypass (Saving Private Ryan): extreme contrast, very desaturated, no color bias
-  - David Fincher (Se7en, Gone Girl): cool, desaturated, slightly green midtones, crushed blacks
-  - Wes Anderson: pastel, warm, slightly lifted, moderate saturation
-  - Christopher Nolan (Oppenheimer): natural but contrasty, warm highlights, deep blacks
-  - Wong Kar-wai (In the Mood for Love): heavy warm/amber, saturated reds, moody shadows
-
-Return ONLY the JSON object. No markdown code blocks. No explanation text. Just the raw JSON starting with { and ending with }."""
-
-TEXT_CREATE_PROMPT = """You are an elite Hollywood DIT (Digital Imaging Technician) and colorist. Based on the description below, create the exact color grading parameters for a 3D LUT.
+TEXT_CREATE_PROMPT = """You are an elite Hollywood colorist. Create precise color grading parameters for a 3D LUT.
 
 DESCRIPTION: {description}
 
-Think deeply about what makes this look distinctive:
-- What are the shadow tones? (Cool/teal? Warm? Neutral? Green-tinged?)
-- What are the midtones biased toward? (Warm skin? Cool steel? Neutral?)
-- What are the highlight tones? (Golden? Blue-white? Rolled off? Clipped?)
-- Is it high or low contrast?
-- Saturated or desaturated?
-- Lifted blacks (faded/vintage) or crushed blacks (deep/dramatic)?
+The engine uses per-channel R/G/B tone curves + DUAL shadow/highlight 3x3 color matrices + saturation.
+The two matrices let you apply DIFFERENT color mixing to shadows vs highlights (like DaVinci Resolve color wheels).
 
-For FILM STOCKS, consider their known characteristics:
-- Kodak Portra: low contrast, warm skin tones, muted greens, lifted shadows
-- Fuji Velvia: extreme saturation, deep blacks, vivid greens and blues
-- CineStill 800T: tungsten amber cast, halation glow, lifted blacks
-- Kodachrome: deep reds, cyan highlights, warm midtones, high saturation
+Think about:
+- Curves: Which channels are lifted/crushed in blacks? Boosted/rolled in highlights?
+- Shadow color: What color cast should dark areas have? (Teal? Blue? Warm? Green?)
+- Highlight color: What color cast should bright areas have? (Orange? Golden? Cool?)
+- Saturation: Vivid, muted, or desaturated?
 
-For MOVIE REFERENCES, consider the actual DI grade:
-- Blade Runner 2049: heavy orange/teal split, desaturated midtones, high contrast
-- The Matrix: green tint everywhere, desaturated, high contrast
-- Mad Max Fury Road: extreme teal/orange, crushed blacks, boosted saturation
-- Euphoria: neon magenta/cyan highlights, lifted blacks, high saturation
-- Dune: warm desert amber, desaturated blues, slightly lifted blacks
+FILM STOCKS:
+- Kodak Portra: R mid=0.54, G mid=0.50, B mid=0.46. Lifted blacks (~0.04). Both matrices near identity. Sat 0.85.
+- Fuji Velvia: Deep blacks (0.00), punchy S-curves. Identity matrices. Sat 1.35.
+- CineStill 800T: R boosted (mid=0.56). Shadow matrix warm (smat_rr=1.05, smat_rg=0.03). Sat 0.90.
 
-For MOODS/EMOTIONS:
-- Warm = safety, nostalgia, romance (push temperature positive, amber shadows)
-- Cool = isolation, sadness, clinical (push temperature negative, blue shadows)
-- Desaturated = gritty, serious, documentary (saturation 0.5-0.7)
-- High contrast = dramatic, intense (contrast 1.3+, crush blacks)
-- Faded/lifted = vintage, dreamy, nostalgic (curve_blacks 0.05+)
+MOVIE LOOKS:
+- Teal & Orange: Shadow matrix: smat_rb=0.8, smat_br=0.6 (teal shadows). Highlight matrix: hmat_rr=1.05, hmat_rg=0.03 (warm highlights).
+- The Matrix: G curve boosted. Shadow: smat_gg=1.08, smat_gr=0.04. Highlight similar. Sat 0.65.
+- Blade Runner 2049: Heavy shadow teal + highlight orange via dual matrices. Sat 0.80.
 
-Return ONLY a JSON object with these 18 parameters:
+MOODS:
+- Warm: R curve up, B down. Highlight matrix warm. Shadow matrix near identity.
+- Cool: B curve up, R down. Shadow matrix cool. Highlight near identity.
+- Faded: All blacks lifted (0.04-0.08), whites rolled. Both matrices identity.
+
+Return ONLY a JSON object:
 
 {{
-  "shadows_r": <-0.20 to 0.20>, "shadows_g": <-0.20 to 0.20>, "shadows_b": <-0.20 to 0.20>,
-  "midtones_r": <0.5-1.5>, "midtones_g": <0.5-1.5>, "midtones_b": <0.5-1.5>,
-  "highlights_r": <-0.20 to 0.20>, "highlights_g": <-0.20 to 0.20>, "highlights_b": <-0.20 to 0.20>,
-  "contrast": <0.5-2.0, 1.0=neutral>,
-  "saturation": <0.0-2.0, 1.0=neutral>,
-  "temperature": <-0.30 to 0.30, negative=cool/blue, positive=warm/amber>,
-  "tint": <-0.30 to 0.30, negative=green, positive=magenta>,
-  "curve_blacks": <0.00-0.15, higher=lifted/faded>,
-  "curve_shadows": <0.10-0.40>,
-  "curve_midpoint": <0.30-0.70, 0.5=neutral>,
-  "curve_highlights": <0.60-0.90>,
-  "curve_whites": <0.85-1.00, lower=rolled-off>,
-  "grade_name": "<short descriptive name for this look>"
+  "r_blacks": <0.0-0.15>, "r_shadows": <0.10-0.40>, "r_mid": <0.30-0.70>,
+  "r_highlights": <0.60-0.90>, "r_whites": <0.85-1.00>,
+  "g_blacks": <0.0-0.15>, "g_shadows": <0.10-0.40>, "g_mid": <0.30-0.70>,
+  "g_highlights": <0.60-0.90>, "g_whites": <0.85-1.00>,
+  "b_blacks": <0.0-0.15>, "b_shadows": <0.10-0.40>, "b_mid": <0.30-0.70>,
+  "b_highlights": <0.60-0.90>, "b_whites": <0.85-1.00>,
+  "smat_rr": <~1.0>, "smat_rg": <~0.0>, "smat_rb": <~0.0>,
+  "smat_gr": <~0.0>, "smat_gg": <~1.0>, "smat_gb": <~0.0>,
+  "smat_br": <~0.0>, "smat_bg": <~0.0>, "smat_bb": <~1.0>,
+  "hmat_rr": <~1.0>, "hmat_rg": <~0.0>, "hmat_rb": <~0.0>,
+  "hmat_gr": <~0.0>, "hmat_gg": <~1.0>, "hmat_gb": <~0.0>,
+  "hmat_br": <~0.0>, "hmat_bg": <~0.0>, "hmat_bb": <~1.0>,
+  "saturation": <0.0-2.0>,
+  "grade_name": "<short name>"
 }}
 
-Be bold with the values — subtle shifts (0.01-0.02) are barely visible in a LUT. Use meaningful shifts (0.04-0.10) to create a look that's actually noticeable.
-Return ONLY the JSON, no other text, no markdown formatting."""
+Be bold — subtle curve shifts (0.01-0.02) are invisible. Use 0.04-0.10 for visible changes.
+For strong looks, use matrix off-diagonals of 0.5-1.0. Make shadow and highlight matrices
+DIFFERENT from each other for cinematic split-tone looks. Keep each row summing to ~1.0.
+Return ONLY the raw JSON."""
 
 REQUIRED_KEYS = [
-    "shadows_r", "shadows_g", "shadows_b", "midtones_r", "midtones_g", "midtones_b",
-    "highlights_r", "highlights_g", "highlights_b", "contrast", "saturation",
-    "temperature", "tint", "curve_blacks", "curve_shadows", "curve_midpoint",
-    "curve_highlights", "curve_whites",
+    "r_blacks", "r_shadows", "r_mid", "r_highlights", "r_whites",
+    "g_blacks", "g_shadows", "g_mid", "g_highlights", "g_whites",
+    "b_blacks", "b_shadows", "b_mid", "b_highlights", "b_whites",
+    "smat_rr", "smat_rg", "smat_rb", "smat_gr", "smat_gg", "smat_gb",
+    "smat_br", "smat_bg", "smat_bb",
+    "hmat_rr", "hmat_rg", "hmat_rb", "hmat_gr", "hmat_gg", "hmat_gb",
+    "hmat_br", "hmat_bg", "hmat_bb", "saturation",
 ]
 
 
@@ -1205,7 +1288,23 @@ class EditorTab(ttk.Frame):
                 lf.grid(row=row, column=0, columnspan=3, sticky="ew", padx=5, pady=(8, 2))
                 row += 1
 
-            label_name = param.replace("_", " ").title()
+            # Friendly slider labels
+            _LABELS = {
+                "r_blacks": "Blacks", "r_shadows": "Shadows", "r_mid": "Midtones",
+                "r_highlights": "Highlights", "r_whites": "Whites",
+                "g_blacks": "Blacks", "g_shadows": "Shadows", "g_mid": "Midtones",
+                "g_highlights": "Highlights", "g_whites": "Whites",
+                "b_blacks": "Blacks", "b_shadows": "Shadows", "b_mid": "Midtones",
+                "b_highlights": "Highlights", "b_whites": "Whites",
+                "smat_rr": "R \u2192 R (self)", "smat_rg": "G \u2192 R (mix)", "smat_rb": "B \u2192 R (mix)",
+                "smat_gr": "R \u2192 G (mix)", "smat_gg": "G \u2192 G (self)", "smat_gb": "B \u2192 G (mix)",
+                "smat_br": "R \u2192 B (mix)", "smat_bg": "G \u2192 B (mix)", "smat_bb": "B \u2192 B (self)",
+                "hmat_rr": "R \u2192 R (self)", "hmat_rg": "G \u2192 R (mix)", "hmat_rb": "B \u2192 R (mix)",
+                "hmat_gr": "R \u2192 G (mix)", "hmat_gg": "G \u2192 G (self)", "hmat_gb": "B \u2192 G (mix)",
+                "hmat_br": "R \u2192 B (mix)", "hmat_bg": "G \u2192 B (mix)", "hmat_bb": "B \u2192 B (self)",
+                "saturation": "Saturation",
+            }
+            label_name = _LABELS.get(param, param.replace("_", " ").title())
             ttk.Label(self.slider_frame, text=label_name, width=18, anchor="e").grid(
                 row=row, column=0, padx=(5, 2), pady=2, sticky="e")
 
