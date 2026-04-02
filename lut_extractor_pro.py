@@ -584,7 +584,7 @@ def extract_frames(video_path, num_frames):
 # SECTION 7: Tab 1 — Extract from Media
 # ═══════════════════════════════════════════════════════════════════
 
-THUMB_W, THUMB_H = 120, 80  # Thumbnail size for frame preview
+THUMB_W, THUMB_H = 90, 60  # Thumbnail size for frame preview
 
 
 class ExtractTab(ttk.Frame):
@@ -601,9 +601,9 @@ class ExtractTab(ttk.Frame):
         self._build()
 
     def _build(self):
-        # Step 1: Select file + frame selection
-        s1 = ttk.LabelFrame(self, text="  Step 1: Select Video or Image & Pick Frames  ", padding=10)
-        s1.pack(fill="both", expand=True, padx=10, pady=(10, 5))
+        # Step 1: Select file + frame selection (fixed height, not expandable)
+        s1 = ttk.LabelFrame(self, text="  Step 1: Select Video or Image & Pick Frames  ", padding=8)
+        s1.pack(fill="x", padx=10, pady=(5, 3))
 
         # Top row: file selection
         row = ttk.Frame(s1)
@@ -628,21 +628,19 @@ class ExtractTab(ttk.Frame):
         self.scrub_frame = ttk.Frame(s1)
         # Not packed yet — shown only when a video is loaded
 
-        self.scrub_canvas = tk.Canvas(self.scrub_frame, width=240, height=160, bg="#1a1a1a",
+        self.scrub_canvas = tk.Canvas(self.scrub_frame, width=160, height=100, bg="#1a1a1a",
                                        highlightthickness=1, highlightbackground="#444")
         self.scrub_canvas.pack(side="left", padx=(0, 10))
-        self.scrub_canvas.create_text(120, 80, text="Scrub to preview", fill="#666", font=("Helvetica", 10))
+        self.scrub_canvas.create_text(80, 50, text="Scrub to preview", fill="#666", font=("Helvetica", 9))
 
         scrub_right = ttk.Frame(self.scrub_frame)
         scrub_right.pack(side="left", fill="x", expand=True)
-        ttk.Label(scrub_right, text="Drag to scrub through video:").pack(anchor="w")
+        ttk.Label(scrub_right, text="Scrub through video:", font=("Helvetica", 9)).pack(anchor="w")
         self.scrub_slider = ttk.Scale(scrub_right, from_=0, to=100, orient="horizontal",
                                        command=self._on_scrub)
-        self.scrub_slider.pack(fill="x", pady=(5, 3))
-        self.lbl_timecode = ttk.Label(scrub_right, text="00:00 / 00:00", foreground="gray")
+        self.scrub_slider.pack(fill="x", pady=(3, 2))
+        self.lbl_timecode = ttk.Label(scrub_right, text="00:00 / 00:00", foreground="gray", font=("Helvetica", 9))
         self.lbl_timecode.pack(anchor="w")
-        ttk.Label(scrub_right, text="Scrub to a frame you like, then click 'Add Current Frame'",
-                  foreground="gray", wraplength=400).pack(anchor="w", pady=(5, 0))
 
         # Selected frames thumbnail strip
         self.thumb_label = ttk.Label(s1, text="Selected frames (click X to remove):", foreground="#333")
@@ -651,10 +649,10 @@ class ExtractTab(ttk.Frame):
         self.thumb_strip = ttk.Frame(s1)
         # Not packed yet
 
-        # Step 2: Gemini
-        s2 = ttk.LabelFrame(self, text="  Step 2: Upload frames to Gemini & paste response  ", padding=10)
-        s2.pack(fill="x", padx=10, pady=5)
-        row2 = ttk.Frame(s2)
+        # Step 2: Gemini buttons + Step 3: Response (combined to save space)
+        s23 = ttk.LabelFrame(self, text="  Step 2: Upload frames to Gemini & paste response  ", padding=8)
+        s23.pack(fill="both", expand=True, padx=10, pady=(3, 5))
+        row2 = ttk.Frame(s23)
         row2.pack(fill="x")
         self.btn_folder = ttk.Button(row2, text="Open Frames Folder", command=self._open_folder, state="disabled")
         self.btn_folder.pack(side="left", padx=(0, 5))
@@ -663,13 +661,9 @@ class ExtractTab(ttk.Frame):
         self.btn_copy = ttk.Button(row2, text="Copy Prompt", command=self._copy_prompt, state="disabled")
         self.btn_copy.pack(side="left")
 
-        # Step 3: Response + Generate
-        s3 = ttk.Frame(self)
-        s3.pack(fill="x", padx=10, pady=(0, 10))
-        ttk.Label(s3, text="Paste Gemini's JSON response:").pack(anchor="w")
-        self.txt = scrolledtext.ScrolledText(s3, height=4, font=("Consolas", 9), wrap="word")
-        self.txt.pack(fill="x", pady=(3, 5))
-        ttk.Button(s3, text="Generate LUT", command=self._generate).pack(anchor="w")
+        self.txt = scrolledtext.ScrolledText(s23, height=3, font=("Consolas", 9), wrap="word")
+        self.txt.pack(fill="both", expand=True, pady=(5, 3))
+        ttk.Button(s23, text="Generate LUT", command=self._generate).pack(anchor="w")
 
     # ── File selection ──
 
@@ -732,7 +726,7 @@ class ExtractTab(ttk.Frame):
         if not ret:
             return
         h, w = frame.shape[:2]
-        scale = min(240 / w, 160 / h)
+        scale = min(160 / w, 100 / h)
         thumb = cv2.resize(frame, (int(w * scale), int(h * scale)))
         rgb = cv2.cvtColor(thumb, cv2.COLOR_BGR2RGB)
         self._current_scrub_bgr = frame  # store full frame for "Add"
@@ -743,7 +737,7 @@ class ExtractTab(ttk.Frame):
     def _update_scrub_preview(self, pil_img):
         self._scrub_photo = ImageTk.PhotoImage(pil_img)
         self.scrub_canvas.delete("all")
-        self.scrub_canvas.create_image(120, 80, image=self._scrub_photo)
+        self.scrub_canvas.create_image(80, 50, image=self._scrub_photo)
 
     # ── Frame management ──
 
