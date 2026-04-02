@@ -14,4 +14,12 @@ build/
 *.mkv
 *.JPG
 *.jpg
+*.jpeg
 *.png
+*.exe
+*.zip
+Thumbs.db
+.DS_Store
+
+# Research/optimization artifacts
+research/
