@@ -22,10 +22,10 @@ jobs:
 
       - name: Build EXE
         run: |
-          pyinstaller --onefile --windowed --name "LUT Extractor" --clean lut_extractor_app.py
+          pyinstaller --onefile --windowed --name "LUT Extractor Pro" --clean lut_extractor_pro.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LUT-Extractor-Windows
-          path: dist/LUT Extractor.exe
+          name: LUT-Extractor-Pro-Windows
+          path: dist/LUT Extractor Pro.exe
